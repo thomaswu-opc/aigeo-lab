@@ -409,3 +409,8 @@ def t_section(bus, sid, axis=2, height=0.0):
 def t_answer(bus, values, evidence=None, confidence=None, unknowns=None, notes=""):
     return {"values": values, "evidence": evidence or [], "confidence": confidence or {},
             "unknowns": unknowns or [], "notes": notes}
+
+
+# 写层（edit）与只读层分开注册；放在文件末尾 import，避免与只读工具产生循环依赖。
+import tools.edit  # noqa: E402,F401
+import tools.checks  # noqa: E402,F401  （只读判据：占地、距边距离）

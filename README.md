@@ -3,18 +3,27 @@
 > 给智能体一张任务卡和一个模型文件，它自己观察、自己选工具、自己判断证据够不够、自己提交并接受审计。
 > 仓库里**没有针对某道题写的代码**：题目只以文本存在，判断只以决策记录存在，数值只由几何内核产生。
 
-参赛作品对应 **Task 01 第 2 问**：计算椅子到门扇、窗框、画框的最短表面距离并排序
-（基准值 `0.696547 / 2.276666 / 3.801856 m`）。
+参赛作品覆盖两组任务：
+
+- **读**：Task 01 第 2 问 —— 计算椅子到门扇、窗框、画框的最短表面距离并排序
+  （基准值 `0.696547 / 2.276666 / 3.801856 m`）。
+- **写**：Task 05（三位置摆放 + 平移修正）、06（房间加宽联动 + 方窗改圆窗 + 改参数验证）、
+  07（正方体抬顶面 + 球切平封口）—— 要交出**改完之后的模型文件**，并在读回的文件上复核。
 
 这是一个**可观测的几何推理沙盒**，不是一份脚本：
 
-- **编排层**（`sandbox/agent/loop.py`）把一次求解拆成 `SURVEY → IDENTIFY → MEASURE → VERIFY → REPORT`，
-  外加 `RECOVER`；每个阶段只能用该阶段的工具，越界即被拒并留痕。
-- **工具层**（`sandbox/tools/*`）13 个与题目无关的几何算子：读入、连通分组、主参照系、筛选、合并、
-  包含、间隙、距离（带见证点）、排序、剖面、面环、提交。
+- **编排层**（`sandbox/agent/loop.py`）把一次求解拆成
+  `SURVEY → IDENTIFY → MEASURE → VERIFY → EDIT → REVALIDATE → REPORT`；
+  每个阶段只能用该阶段的工具，越界即被拒并留痕。`REVALIDATE` 的白名单里没有编辑工具。
+- **工具层**（`sandbox/tools/*`）22 个与题目无关的几何算子：读入、连通分组、主参照系、筛选、合并、
+  包含、间隙、距离（带见证点）、排序、剖面、面环、**平移 / 拉伸 / 平面切割 / 圆孔重建**、
+  **网格体检 / 占地 / 间隙 / 洞口底边 / 落盘**、提交。
 - **审计层**（同一文件里的 `_audit`）提交的每个数字必须能在某次工具返回里真实出现过（1e-6 容差），
   「编一个看起来合理的数」在结构上通不过。
 - **账本**（`sandbox/core/runtime.py`）哈希链逐条串起决策、调用、阶段切换与拒绝，改一条就断。
+
+写层多两条纪律，由阶段机强制而不是靠自觉：**改了几何就必须落盘**，
+**落盘必须读回自己写出的那个文件**才能进报告。编辑函数自报的「我改对了」不算证据。
 
 ## 一分钟上手
 
@@ -26,18 +35,24 @@ pip install -r requirements.txt          # 只有 numpy + pillow；视频需要�
 #    https://hack26.ctrlpath.co/api/tasks/download
 #    pkg/AI-Geometry-Models/{IFC,OBJ,GLTF,USD,FBX,BLEND}/...
 
-# 2) 一条命令复现：造变体 → agent 求解（出录像）→ 对照组 → 对抗样本 → 矩阵 → 观测页
+# 2) 一条命令复现：造变体 → agent 求解（出录像）→ 对照组 → 对抗样本 → 矩阵 → 写层 → 观测页
 bash sandbox/reproduce.sh
+
+# 2b) 只跑写层（三道题 + 独立验收）
+python sandbox/run_edit_all.py          # 跑完自动读回产物逐条验收
+python sandbox/compare_edits.py         # 换格式/命名/单位/朝向，写层还成立吗
 
 # 3) 看过程（只读，不需要 API key）
 python sandbox/view.py                    # 本地观测台 http://127.0.0.1:8765
 python sandbox/view.py ls                 # 终端列表
-python sandbox/view.py show ag_ifc        # 终端逐步时间线
-python sandbox/view.py export ag_ifc      # 导出单文件 HTML，双击即看
+python sandbox/view.py show edit07        # 终端逐步时间线
+python sandbox/view.py export edit07 --inline   # 导出单文件 HTML，双击即看
 ```
 
 **不想装环境也能看**：`docs/demo/viewer_ag_ifc.html` 是基准运行的自包含快照
 （41 条账本事件 + 33 帧画面内嵌在一个文件里），双击打开，游标走一步、右侧画面跟着换。
+`docs/demo/viewer_edit07.html` 是写层的快照：时间线上「几何已改」「读回自己的产物」各自成一条，
+右侧多一张写层卡片，把每个实体改前/改后的尺寸与体积并排列出来。
 
 ![观测台](docs/demo/screenshot.png)
 
@@ -48,6 +63,8 @@ python sandbox/view.py export ag_ifc      # 导出单文件 HTML，双击即看
 | 「不能只对给定模型有效，尺寸/位置/参数改变后仍应能处理同类问题」 | 同一份决策序列，换 5 种输入各跑一遍：换格式（IFC→OBJ）、抹名称（全随机）、绕竖轴 90°、单位 ×1000、**绕竖轴 45°（非轴对齐，触发自救）**。五者答案一致（OBJ 差 1e-6，源自只保留 6 位小数） | `sandbox/compare_agent.py` → `sandbox/runs/agent_matrix.md` |
 | 「AI 需要承担实际工作，不能只把单一固定算法作为完整方案」 | 决策由策略层产出（LLM / 记录回放 / 规则回退三种同一接口）；工具注册表里**不存在任何任务编号**，也没有「先选窗框再测距」的固定流程；阶段门控使 agent 不可能跳过识别直接答题 | `sandbox/agent/policy.py`、`agent/loop.py`、`tools/ops.py` |
 | 「不能只给已有脚本增加 AI 对话功能」 | agent 拿到的是**观察**（几何指纹 + 命中数 + 见证点），不是脚本返回；选错工具会被门控拒，期望命中数不符会进 RECOVER 自救 | `sandbox/agent/loop.py`、`episodes/T01_2.agent.json` |
+| 「改模型」（Task 05/06/07） | 写层四原语（平移/拉伸/切割/圆孔重建）+ 网格体检；改完必须落盘、必须读回自己的产物才能报告；`verify_edits.py` 用评委立场只读磁盘文件重量，32 项检查全通过 | `sandbox/tools/edit.py`、`run_edit_all.py`、`verify_edits.py` |
+| 「参数改变后仍能处理」 | 读层：换 5 种输入答案一致。写层：换格式/命名/单位后产出的模型逐位一致；绕 90° 时 T-07 仍一致（只动 z），T-05/T-06 失败并被审计拦下（锚点按世界轴写），把写层的边界划清楚 | `sandbox/compare_edits.py` → `runs/edit_matrix.md` |
 | 「用结果说明改进，说明效果、错误与局限」 | 对照组（外部 plan 驱动）与 agent 逐位一致，证明编排层无偏差；两个对抗样本分别得到 `GATE_BLOCKED` / `AUDIT_FAILED`；LLM 策略卡在哪、为什么，写在 README 里不藏 | `sandbox/README.md` → 「LLM 策略：实测到哪一步，卡在哪一步」 |
 | 「代码仓库评委可读」 | 本仓库；数据与运行产物不入库（见下），代码 + 任务卡 + 决策记录 + 复现脚本全部在内 | `.gitignore` |
 | 「不超过 5 分钟演示视频」 | 逐镜脚本已写好：问题 → 方法 → 五变体 → 对抗样本 → 局限 | `docs/video-script.md` |
@@ -63,15 +80,20 @@ sandbox/
   README.md               方法、机制、实测记录、已知限制（长文，建议按顺序读）
   run_agent.py            agent 入口：循环 + 留痕 + 报告 + 录像
   run.py                  plan 执行器（对照组）
+  run_edit_all.py         写层一键跑（T-05/06/07）+ 独立验收
+  verify_edits.py         只读磁盘产物、对照任务卡验收（不读智能体的报告）
+  compare_edits.py        写层泛化矩阵：换格式/命名/单位/朝向
   view.py                 观测层：CLI 列表 / 终端时间线 / 观测台 / 单文件导出
   agent/                  编排层（loop）、决策层（policy）、工具规格与观察压缩（schema）
-  tools/                  读入层（6 格式→世界坐标网格）、度量内核、面结构、13 个工具
+  tools/                  读入层（6 格式→世界坐标网格）、度量内核、面结构、写层、判据、22 个工具
   core/runtime.py         哈希链账本 + 工具总线 + 引用解析（解析器不用 eval）
   tasks/T01_2.md          智能体收到的全部任务信息（不含答案、不含编号、不含步骤）
+  tasks/T05.md T06.md T07.md   写层三道任务卡（关键定义逐条固定，含长度容差与体积容差）
   episodes/               决策记录（可回放，无需 API key）；adv_* 是故意做坏的对抗样本
   plans/                  对照组用的 plan（只有工具调用与引用，没有控制流）
   mutate.py               造变体：换格式 / 随机化名称 / 刚体旋转 / 改单位
-  compare_agent.py        泛化 + 防作弊矩阵
+  compare_agent.py        读层泛化 + 防作弊矩阵
+  make_T06_episode.py     T-06 决策记录生成器（锚点表即参数，换参数即换记录）
   viz/render.py           无头渲染（PIL 正交投影），无显卡依赖
   viz/viewer.html         观测台前端（单文件、零外部依赖）
 ```
@@ -88,10 +110,13 @@ sandbox/
 
 ## 边界（写在明处）
 
-- EDIT 层（加宽联动、拉伸切平、修正平移）、扫掠碰撞、曲面解析拟合尚未实现 —— 详见 `sandbox/README.md`。
+- **扫掠碰撞尚未实现** —— Task 08（开门 0→90° 找首次接触角）与 Task 10（插脚下降穿插）需要
+  实体布尔或连续碰撞检测，当前只有半空间切割。
+- **写层锚点按世界轴写** —— 换个朝向（绕竖轴 90°）时 T-05/T-06 会失败，且被审计拦下；见 `runs/edit_matrix.md`。
+- **圆孔是多边形近似** —— 48 段，面积精确到 1e-6，外接方框 1.5828 而非 πr 的 1.5799。
 - LLM 策略在「框体 vs 内嵌板」上卡住：窗是框+玻璃、画是框+板，题问「框」而模型选了板。
   缺的是关系判据（内环包含 + `enclosure` 配对），不是提示词。
-- 本仓库只针对 Task 01 第 2 问做了端到端验证；其余 9 题是同一套工具与编排的扩展面，未逐一验收。
+- 其余题目是同一套工具与编排的扩展面，未逐一验收。
 
 ## 许可
 

@@ -1,0 +1,461 @@
+{
+  "note": "T05 的决策记录。三个位置各一个副本，靠「平移 + 占地 + 距门」三件套独立判定，不靠记忆里的坐标。位置 1 恰好是椅子原位（卡片给的 0.70/1.62 与实测占地中心一致），但它距门不足 1 m —— 这正是本题的陷阱：看起来最省事的位置并不合法。因此位置 1 需要提平移方案并在副本上复验。",
+  "card": "tasks/T05.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "读入。keep_metadata=false：只允许用几何判断角色与边界。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "clusters",
+      "tool": "clusters",
+      "args": {
+        "items": "@load.solids",
+        "tol": 1.0
+      },
+      "why": "文件装着三组互不相连的模型；房间是实体最多的那一簇。"
+    },
+    {
+      "phase": "SURVEY",
+      "tool": "advance_phase",
+      "why": "已读入并分离出房间簇。进入角色识别。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "walls",
+      "tool": "select",
+      "args": {
+        "items": "@clusters.groups[0].items",
+        "where": {
+          "$and": [
+            {
+              "d2": {
+                "$lte": 0.25
+              }
+            },
+            {
+              "d0": {
+                "$gte": 3.5
+              }
+            },
+            {
+              "z_min": {
+                "$gte": -0.006
+              }
+            },
+            {
+              "z_min": {
+                "$lte": 0.006
+              }
+            }
+          ]
+        }
+      },
+      "why": "薄、长、落地且底面在 z=0 的竖向板 = 墙。z 的双侧约束用来把地板排除掉（地板底面在 z<0）。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "floor",
+      "tool": "select",
+      "args": {
+        "items": "@clusters.groups[0].items",
+        "where": {
+          "$and": [
+            {
+              "z_min": {
+                "$lte": -0.01
+              }
+            },
+            {
+              "d2": {
+                "$lte": 0.15
+              }
+            },
+            {
+              "d0": {
+                "$gte": 4.5
+              }
+            }
+          ]
+        }
+      },
+      "why": "薄、水平、面积撑满房间且底面低于 z=0 的板 = 地板。它的顶面边界就是房间范围。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "doorhole",
+      "tool": "select",
+      "args": {
+        "items": "@clusters.groups[0].items",
+        "where": {
+          "$and": [
+            {
+              "d0": {
+                "$gte": 2.05
+              }
+            },
+            {
+              "d0": {
+                "$lte": 2.15
+              }
+            },
+            {
+              "d1": {
+                "$gte": 0.95
+              }
+            },
+            {
+              "d1": {
+                "$lte": 1.05
+              }
+            }
+          ]
+        }
+      },
+      "why": "贯穿墙体的盒状几何：厚度方向超出墙厚、另一向宽约 1 m、高约 2.1 m = 门洞。用它定门洞底边。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "chair",
+      "tool": "select",
+      "args": {
+        "items": "@clusters.groups[0].items",
+        "where": {
+          "$and": [
+            {
+              "z_min": {
+                "$lte": 0.006
+              }
+            },
+            {
+              "d2": {
+                "$gte": 0.3
+              }
+            },
+            {
+              "d2": {
+                "$lte": 1.1
+              }
+            },
+            {
+              "d0": {
+                "$lte": 1.0
+              }
+            }
+          ]
+        }
+      },
+      "why": "落地、三向尺寸都在 1 m 以内、最小尺寸不小于 0.3 m 的实体 = 椅子（门把手三向都太小，门扇最薄向只有 0.04）。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "tool": "advance_phase",
+      "why": "墙、地板、门洞、椅子四个角色都压到唯一命中。进入基线测量。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "fp0",
+      "tool": "footprint",
+      "args": {
+        "sids": "@chair.items"
+      },
+      "why": "先量椅子原始占地与占地中心。这是位置 1 的实测值，也是后面算平移量的基准。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "edge",
+      "tool": "opening_edge",
+      "args": {
+        "walls": "@walls.items",
+        "opening": "@doorhole.items[0].sid",
+        "floor": "@floor.items[0].sid"
+      },
+      "why": "把门洞底边定下来：室内墙面上的那条线段，两端取开口边缘。后面所有距门距离都以它为准。"
+    },
+    {
+      "phase": "MEASURE",
+      "tool": "advance_phase",
+      "why": "占地中心与门洞底边都拿到了。进入编辑（三个位置各一个副本）。"
+    },
+    {
+      "phase": "VERIFY",
+      "tool": "advance_phase",
+      "why": "本题的判据就是编辑后的量，没有中间结论要复核，直接进入摆放。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "cl_p1",
+      "tool": "clearance",
+      "args": {
+        "sid": "@chair.items[0].sid",
+        "p1": "@edge.edge[0]",
+        "p2": "@edge.edge[1]"
+      },
+      "why": "位置 1：椅子不动（实测中心与卡片给的 0.70/1.62 一致）。先量距门距离。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "e_p1",
+      "tool": "emit",
+      "args": {
+        "path": "runs/edit05/chair_p1.gltf",
+        "sids": "@chair.items"
+      },
+      "why": "位置 1 的副本落盘。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "mv_p2",
+      "tool": "translate",
+      "args": {
+        "sids": "@chair.items",
+        "delta": [
+          0.9,
+          0.0,
+          0.0
+        ]
+      },
+      "why": "位置 2：占地中心需从距左墙 0.70 变到 1.60，即沿左墙法向（x）右移 0.90 m；前后方向不变。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "fp_p2",
+      "tool": "footprint",
+      "args": {
+        "sids": "@chair.items"
+      },
+      "why": "复核平移后占地中心是否确实落在目标位置，而不是凭平移量推断。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "cl_p2",
+      "tool": "clearance",
+      "args": {
+        "sid": "@chair.items[0].sid",
+        "p1": "@edge.edge[0]",
+        "p2": "@edge.edge[1]"
+      },
+      "why": "位置 2 的距门距离。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "e_p2",
+      "tool": "emit",
+      "args": {
+        "path": "runs/edit05/chair_p2.gltf",
+        "sids": "@chair.items"
+      },
+      "why": "位置 2 的副本落盘。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "mv_p3",
+      "tool": "translate",
+      "args": {
+        "sids": "@chair.items",
+        "delta": [
+          -0.4,
+          0.78,
+          0.0
+        ]
+      },
+      "why": "位置 3：占地中心需到距左墙 1.20、距前边界 2.40。相对当前位置左移 0.40、向后 0.78。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "fp_p3",
+      "tool": "footprint",
+      "args": {
+        "sids": "@chair.items"
+      },
+      "why": "复核位置 3 的实际占地中心。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "cl_p3",
+      "tool": "clearance",
+      "args": {
+        "sid": "@chair.items[0].sid",
+        "p1": "@edge.edge[0]",
+        "p2": "@edge.edge[1]"
+      },
+      "why": "位置 3 的距门距离。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "e_p3",
+      "tool": "emit",
+      "args": {
+        "path": "runs/edit05/chair_p3.gltf",
+        "sids": "@chair.items"
+      },
+      "why": "位置 3 的副本落盘。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "mv_back",
+      "tool": "translate",
+      "args": {
+        "sids": "@chair.items",
+        "delta": [
+          -0.5,
+          -0.78,
+          0.0
+        ]
+      },
+      "why": "位置 1 未通过（距门不足 1 m），提方案前先把副本移回位置 1 的占地中心：相对位置 3 左移 0.50、向前 0.78。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "mv_shift",
+      "tool": "translate",
+      "args": {
+        "sids": "@chair.items",
+        "delta": [
+          0.55,
+          0.0,
+          0.0
+        ]
+      },
+      "why": "方案本体：沿左墙法向（+x）右移 0.55 m，前后不动。0.47+0.55=1.02 ≥ 1 m。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "fp_fix",
+      "tool": "footprint",
+      "args": {
+        "sids": "@chair.items"
+      },
+      "why": "验证修正后的占地中心。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "cl_fix",
+      "tool": "clearance",
+      "args": {
+        "sid": "@chair.items[0].sid",
+        "p1": "@edge.edge[0]",
+        "p2": "@edge.edge[1]"
+      },
+      "why": "验证修正后距门距离是否达标（这才是「在副本上验证」）。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "e_fix",
+      "tool": "emit",
+      "args": {
+        "path": "runs/edit05/chair_p1_fixed.gltf",
+        "sids": "@chair.items"
+      },
+      "why": "修正后的副本落盘。"
+    },
+    {
+      "phase": "EDIT",
+      "tool": "advance_phase",
+      "why": "三个位置与一个修正方案都已改完并各自落盘（4 次平移、4 个文件）。进入复核。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "rl_p2",
+      "tool": "load",
+      "args": {
+        "path": "runs/edit05/chair_p2.gltf"
+      },
+      "why": "读回位置 2 的文件。此后所有量来自磁盘，不来自内存里的中间对象。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "hv_fp_p2",
+      "tool": "footprint",
+      "args": {
+        "sids": "@rl_p2.solids"
+      },
+      "why": "读回后重量占地：与编辑时的值必须一致，否则说明落盘有问题。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "rl_fix",
+      "tool": "load",
+      "args": {
+        "path": "runs/edit05/chair_p1_fixed.gltf"
+      },
+      "why": "读回修正后的位置 1 副本。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "hv_cl_fix",
+      "tool": "clearance",
+      "args": {
+        "sid": "@rl_fix.solids[0].sid",
+        "p1": "@edge.edge[0]",
+        "p2": "@edge.edge[1]"
+      },
+      "why": "读回后重量距门距离 —— 方案成立与否只能由这一步判定。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "tool": "advance_phase",
+      "why": "已读回自己写出的文件并独立重量（reloaded 与 emitted 有交集），进入报告。"
+    },
+    {
+      "phase": "REPORT",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "chair_center_original_xy_m": [
+            5.3,
+            -0.38
+          ],
+          "chair_footprint_size_m": [
+            0.46,
+            0.5
+          ],
+          "p1_distance_to_door_m": 0.47,
+          "p2_distance_to_door_m": 1.37,
+          "p2_center_xy_m": [
+            6.2,
+            -0.38
+          ],
+          "p3_distance_to_door_m": 1.1962,
+          "p3_center_xy_m": [
+            5.8,
+            0.4
+          ],
+          "p1_fixed_distance_to_door_m": 1.02,
+          "p1_shift_right_m": "@mv_shift.delta[0]",
+          "p1_fixed_distance_after_reload_m": 1.02
+        },
+        "evidence": [
+          "fp0",
+          "edge",
+          "cl_p1",
+          "cl_p2",
+          "cl_p3",
+          "cl_fix",
+          "hv_fp_p2",
+          "hv_cl_fix",
+          "mv_shift",
+          "fp_p2",
+          "fp_p3",
+          "fp_fix"
+        ],
+        "confidence": {
+          "p1_distance_to_door_m": "high",
+          "p2_distance_to_door_m": "high",
+          "p3_distance_to_door_m": "high",
+          "p1_fixed_distance_to_door_m": "high"
+        },
+        "unknowns": [],
+        "notes": "位置 1 与椅子原位重合（卡片给的 0.70/1.62 与实测占地中心一致），但距门仅 0.47 m，不满足 1 m，故未通过。位置 2、3 通过，距门分别为 1.37 m 与 1.1962 m；相对原始位置的位移分别为 0.90 m 与 sqrt(0.5^2+0.78^2)=0.926 m，最小者为位置 2（0.90 m）。位置 1 的平移方案：沿左墙法向右移 0.55 m、前后不动，距门变为 1.02 m，已在副本上验证并读回复核。四项检查中，家具数量恒为 1；占地在地板内、不穿墙在两位置均成立（占地 x 上界 6.43 < 右墙内侧 9.4；y 上界 0.65 < 后墙内侧 2.0）。"
+      },
+      "why": "提交。距门距离均可追溯到 clearance 步骤；修正后的值同时有编辑时与读回后两个来源且一致。"
+    }
+  ]
+}

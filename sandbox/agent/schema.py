@@ -30,7 +30,25 @@ _KEEP = ("sid", "d0", "d1", "d2", "min_thickness", "z_min", "axis_aligned",
          "origin", "unknowns", "confidence", "evidence", "method", "uncertainty",
          "n_segments", "n_groups", "transform", "witness_a", "witness_b", "limits",
          "skipped", "scale_source", "unit", "note", "notes", "direction", "axis",
-         "bbox_lo", "bbox_hi", "ntri", "max_patch_area", "bbox_volume")
+         "bbox_lo", "bbox_hi", "ntri", "max_patch_area", "bbox_volume",
+         # 包围盒中心：位置判别（哪面墙、哪个洞口）只能靠这三个标量
+         "cx", "cy", "cz", "dims",
+         # 网格体检（mesh_health）：编辑类任务的判据全在这里，少一个字段就等于
+         # 让模型在「看不见封闭性」的情况下判断封口成功没有。
+         "closed", "watertight", "n_boundary_edges", "n_boundary_loops",
+         "n_duplicate_faces", "n_degenerate", "n_nonmanifold_edges",
+         "n_flipped_edges", "euler", "surface_area", "signed_volume", "dims",
+         "n_vert", "n_tri", "n_used_vert", "note_unused_vert",
+         # 编辑与落盘的返回量
+         "kept_side", "plane", "stats", "cut", "health_before", "health_after",
+         "dangling", "loops", "n_cap_tri", "anchors", "max_shift",
+         "bbox_before", "bbox_after", "order", "bytes", "format", "n_solids", "path",
+         # 占地 / 距边 / 洞口底边（checks.py）。少了这些，模型只知道「量过了」，
+         # 不知道量出来是多少，于是只能凭平移量反推答案 —— 那正是审计要抓的东西。
+         "center_world", "rect_world_xy", "rect", "center", "size", "grounded",
+         "z_min", "z_max", "axis_map", "nearest_on_footprint", "nearest_on_edge",
+         "footprint_rect", "edge", "width", "height", "sill_z", "inward_normal",
+         "axis_u", "axis_thin", "wall", "opening", "floor", "rule", "n_tri_checked")
 
 # 控制类工具：不进几何总线，由编排层拦截。LLM 用它们表达「阶段推进 / 放弃」。
 CONTROL = [

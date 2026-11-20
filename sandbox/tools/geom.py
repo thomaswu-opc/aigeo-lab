@@ -107,6 +107,11 @@ def describe(S):
         "cover": round(ds[2] / max(ds[1], EPS), 6),
         "bbox_lo": [round(float(x), 6) for x in lo],
         "bbox_hi": [round(float(x), 6) for x in hi],
+        # 包围盒中心的三个标量版本。位置判别（哪面墙、哪个门洞）经常只能靠它，
+        # 而 select 的 where 只吃标量 —— 数组字段没法在纯数据比较里被引用。
+        "cx": round(float((lo[0] + hi[0]) / 2), 6),
+        "cy": round(float((lo[1] + hi[1]) / 2), 6),
+        "cz": round(float((lo[2] + hi[2]) / 2), 6),
         "volume": round(V, 6),
         "bbox_volume": round(bv, 6),
         "fill": round(V / bv, 6) if bv > EPS else 0.0,

@@ -24,17 +24,31 @@ import numpy as np
 from core.runtime import TOOLS, _short
 from agent import schema as sch
 
-PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "VERIFY", "REPORT"]
+PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "VERIFY", "EDIT", "REVALIDATE", "REPORT"]
 
 # 阶段 → 允许的几何工具。RECOVER 是唯一可跨类诊断的阶段，但也不许提交答案。
+#
+# EDIT / REVALIDATE 是写层的两个阶段，它们存在的理由只有一条：
+# 编辑不许自证。改完必须落盘、重新读回、用与编辑无关的只读工具重量一遍。
+# 所以 REVALIDATE 里没有编辑工具 —— 验证阶段继续改，就永远存在一个没被验证的中间态。
 PHASE_TOOLS = {
     "SURVEY":   {"load", "clusters", "principal_frame"},
     "IDENTIFY": {"select", "principal_frame", "contains", "merge", "gaps", "clusters", "segment", "pick"},
-    "MEASURE":  {"distance", "rank", "section", "segment", "pick", "merge"},
-    "VERIFY":   {"distance", "section", "select", "principal_frame", "segment", "pick"},
+    "MEASURE":  {"distance", "rank", "section", "segment", "mesh_health",
+                 "footprint", "clearance", "opening_edge", "pick", "merge"},
+    "VERIFY":   {"distance", "section", "select", "principal_frame", "segment",
+                 "mesh_health", "footprint", "clearance", "pick"},
+    "EDIT":     {"translate", "stretch_axis", "cut_plane", "reopen_round", "emit", "mesh_health",
+                 "footprint", "clearance", "opening_edge", "segment",
+                 "select", "pick", "merge", "section", "distance", "gaps", "contains"},
+    "REVALIDATE": {"load", "clusters", "principal_frame", "select", "pick", "merge",
+                   "mesh_health", "footprint", "clearance", "opening_edge",
+                   "section", "distance", "rank", "segment", "contains", "gaps"},
     "RECOVER":  {"principal_frame", "clusters", "segment", "select", "gaps", "load", "pick"},
     "REPORT":   {"answer"},
 }
+
+EDIT_TOOLS = {"translate", "stretch_axis", "cut_plane"}
 
 PHASE_GOAL = {
     "SURVEY": "把模型读进来并弄清它由几个互不相连的部分组成。必须先完成，否则后面所有 sid 都无从谈起。",
@@ -45,6 +59,10 @@ PHASE_GOAL = {
     "MEASURE": "对已定角色的实体做题目要求的测量，拿到带见证物的数值。",
     "VERIFY": "用与测量无关的独立路径复核结果：见证点是否在表面上、单位是否自洽、"
               "多口径是否一致。发现问题就退回 IDENTIFY 改判据，而不是改数字。",
+    "EDIT": "按任务卡改动几何：translate 整体平移 / stretch_axis 沿轴分段重映射（加宽、拉高）/ "
+            "cut_plane 平面切割并封口。每步都会返回改动前后的可核对量。改完必须 emit 落盘。",
+    "REVALIDATE": "读回刚 emit 的文件，用只读工具重新量一遍改动前后的量（体积、尺寸、开口面积、封闭性、"
+                  "距离）。禁止在这一阶段继续改几何 —— 只有落盘后的文件被独立量过，编辑才算成立。",
     "RECOVER": "上一步没有给出预期证据。先诊断是判据错了还是参照系错了，再回退重做。"
                "禁止在这一阶段直接给答案。",
     "REPORT": "只调用 answer 提交。values 里至少要有：unit（单位）、chair（椅子 sid）、"
@@ -80,6 +98,9 @@ class Loop:
         self.failures = []                       # 未消解的失败
         self.gate_rejects = 0
         self.audit_rejects = 0
+        self.edits = []                          # 成功的编辑步骤（translate/stretch/cut）
+        self.emitted = set()                     # emit 写出的文件（绝对路径）
+        self.reloaded = set()                    # 读回并确认是 emit 产物的文件
         self.answer = None
         self.status = "RUNNING"
         self.t0 = time.time()
@@ -257,8 +278,27 @@ class Loop:
                 self.roles[sid] = items[0]["sid"]
                 self.L.append("role_decided", {"role": sid, "sid": items[0]["sid"],
                                                "evidence": _short(args, 200)})
-        if name in ("distance", "rank", "section"):
+        if name in ("distance", "rank", "section", "mesh_health",
+                    "footprint", "clearance", "opening_edge"):
+            # 凡是「产出一个可复核的量」的工具都算测量。早先只认 distance/rank/section，
+            # 于是编排型任务（占地、距门、体检）全都不算数，MEASURE 阶段永远推不动。
             self.measurements.append(sid)
+        if name in EDIT_TOOLS:
+            self.edits.append({"step": sid, "tool": name, "args": _short(args, 200)})
+            self.L.append("geometry_edited", {"step": sid, "tool": name, "phase": self.phase})
+            # 几何变了，「相同参数 = 相同结果」这个前提就不成立了。
+            # 不清空的话，编辑前量一次、编辑后再量一次会被判成「原地打转」，
+            # 而它恰恰是本层最该做的动作：改前改后各量一遍。
+            self._sig_count.clear()
+        if name == "emit" and isinstance(out, dict) and out.get("path"):
+            self.emitted.add(out["path"])
+        if name == "load" and isinstance(out, dict):
+            p = (out.get("meta") or {}).get("path")
+            if p in self.emitted:
+                # 只有「读回的正是自己刚写出去的那个文件」才算复核。
+                # 重读原始模型不算 —— 那是在看没改过的东西。
+                self.reloaded.add(p)
+                self.L.append("reloaded_own_output", {"step": sid, "path": p})
 
         if self.phase == "RECOVER" and self.failures and not self.failures[-1].get("resolved"):
             f = self.failures[-1]
@@ -288,6 +328,13 @@ class Loop:
             "IDENTIFY": lambda: self.context()["board"]["n_unique_selections"] >= 2,
             "MEASURE": lambda: len(self.measurements) >= 1,
             "VERIFY": lambda: not any(f for f in self.failures if not f.get("resolved")),
+            # 写层的第一条纪律：改了几何就必须落盘。
+            # 「改完只在内存里体检一下就交卷」是这类任务最容易出的事 —— 报告很漂亮，
+            # 但没有任何可交付的模型。没改几何则允许空过（纯测量任务走这条）。
+            "EDIT": lambda: (not self.edits) or bool(self.emitted),
+            # 第二条纪律：落盘之后必须读回。这条是整个写层的地基 ——
+            # 没有它，agent 可以在内存里改完、自报体检通过，而磁盘上什么都没变。
+            "REVALIDATE": lambda: bool(self.emitted) and bool(self.reloaded & self.emitted),
         }.get(self.phase)
         if gate is not None and not gate():
             self.gate_rejects += 1
@@ -302,6 +349,13 @@ class Loop:
             target = self._recover_from or "IDENTIFY"
         else:
             target = PHASES[min(i + 1, len(PHASES) - 1)]
+            # 离开 EDIT 时才知道要不要写层：这一步一次几何都没动，就没有落盘与回读可言，
+            # 直接去报告。判据是「这一阶段实际做了什么」，不是「卡片看起来像哪类题」——
+            # 后者要把题目知识塞进门控，正是这套东西一直想避免的。
+            if self.phase == "EDIT" and not self.edits:
+                target = "REPORT"
+                self.L.append("phase_skip", {"from": self.phase, "skipped": ["REVALIDATE"],
+                                             "why": "本次运行没有编辑动作，跳过复核"})
         self.L.append("phase", {"from": self.phase, "to": target, "why": why})
         self.phase = target
 
@@ -362,7 +416,13 @@ class Loop:
         for c in claims:
             if c in (0.0, 1.0) and not pool:            # 计数类
                 continue
-            hit = any(abs(c - p) <= max(1e-9, 1e-6 * max(1.0, abs(c))) for p in pool)
+            # 容差有两个来源，取宽的那个：
+            #   a) 数值本身：相对 1e-6（够严，能抓住改写与错位）
+            #   b) 观察精度：观察里的浮点被压到 4 位小数，模型照抄就是 4.1846。
+            #      若只认 a)，模型「看得见的数」和「交得上的数」永远不一致 ——
+            #      审计会稳定地判它编造，而它其实一字未改地抄了证据。实测踩过。
+            hit = any(abs(c - p) <= max(1e-9, 1e-6 * max(1.0, abs(c)))
+                      or abs(round(p, 4) - c) <= 1e-9 for p in pool)
             if not hit:
                 ungrounded.append(c)
         if ungrounded:

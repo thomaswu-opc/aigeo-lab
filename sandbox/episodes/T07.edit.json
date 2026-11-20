@@ -1,0 +1,258 @@
+{
+  "note": "T07 的决策记录。这道题的要害不是会不会切割，而是『编辑能否被独立验证』：改完必须落盘、读回、用只读工具重量。因此 EDIT 阶段只做改动与落盘，REVALIDATE 阶段全部重新读文件再量。答案里的数字先按引用形式写，运行后可固化为具体值以检验审计是否真的在查。",
+  "card": "tasks/T07.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "读入模型。keep_metadata=false：编辑依据只能是几何，不许看名称与类别。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "clusters",
+      "tool": "clusters",
+      "args": {
+        "items": "@load.solids",
+        "tol": 1.0
+      },
+      "why": "文件里同时装着三组互不相连的模型。按包围盒间隙分离，避免把房间或火箭当成编辑对象。"
+    },
+    {
+      "phase": "SURVEY",
+      "tool": "advance_phase",
+      "why": "已读入，已分离出三组；本次要动的是第二组（两个实体、跨度约 5.3×2.5×2.5）。进入识别。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "cube",
+      "tool": "select",
+      "args": {
+        "items": "@clusters.groups[1].items",
+        "where": {
+          "ntri": {
+            "$lte": 20
+          }
+        }
+      },
+      "why": "两个实体里，三角面极少的是长方体（12 个面）；另一个是曲面细分的球。用面数而不是名称来分。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "ball",
+      "tool": "select",
+      "args": {
+        "items": "@clusters.groups[1].items",
+        "where": {
+          "ntri": {
+            "$gte": 1000
+          }
+        }
+      },
+      "why": "面数上千、且包围盒填充率远小于 1 的是球（曲面细分后三角面很多）。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "tool": "advance_phase",
+      "why": "两个角色都压到唯一命中：cube 面数≤20，ball 面数≥1000。进入基线测量。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "hs_cube0",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@cube.items"
+      },
+      "why": "先量编辑前的基线：尺寸、体积、表面积、封闭性。没有基线就没法证明『哪些量变了、变了多少』。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "hs_ball0",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@ball.items"
+      },
+      "why": "球的基线：体积与表面积，并确认它是闭合网格 —— 不闭合的网格切开后无法判断封口是否成功。"
+    },
+    {
+      "phase": "MEASURE",
+      "tool": "advance_phase",
+      "why": "两个实体的基线都已拿到。进入编辑。"
+    },
+    {
+      "phase": "VERIFY",
+      "tool": "advance_phase",
+      "why": "本题的判据是编辑后的量，VERIFY 没有独立的中间结论要复核；基线已含封闭性检查，直接进入编辑。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "tall",
+      "tool": "stretch_axis",
+      "args": {
+        "sids": "@cube.items",
+        "axis": 2,
+        "anchors": [
+          [
+            0.0,
+            0.0
+          ],
+          [
+            2.5,
+            3.0
+          ]
+        ]
+      },
+      "why": "顶面上移 0.5：把 z 轴锚点从 (0, 2.5) 重映射到 (0, 3.0)，底面 z=0 固定不动，宽度与深度不受影响。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "cut",
+      "tool": "cut_plane",
+      "args": {
+        "sid": "@ball.items[0].sid",
+        "axis": 2,
+        "value": 0.5,
+        "keep": "above",
+        "cap": true
+      },
+      "why": "球最低点 z=0（基线 bbox 的下界），故切平面取 z=0.5。保留上方，并要求封口 —— 不封口就是一个破洞。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "hs_cube1",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@cube.items"
+      },
+      "why": "编辑后立刻体检：确认拉伸没有破坏封闭性，并读出新的尺寸与体积。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "hs_ball1",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@ball.items"
+      },
+      "why": "切割后体检：封闭、破洞数、重复面、退化面，以及新体积与表面积。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "emit_cube",
+      "tool": "emit",
+      "args": {
+        "path": "runs/edit07/cube_tall.gltf",
+        "sids": "@cube.items"
+      },
+      "why": "把长方体写成可再次读入的文件。glTF 会带上单位声明，读回时不必再猜尺度。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "emit_ball",
+      "tool": "emit",
+      "args": {
+        "path": "runs/edit07/ball_cut.gltf",
+        "sids": "@ball.items"
+      },
+      "why": "球的切割结果同样落盘。两个编辑任务各自是独立文件，互不覆盖。"
+    },
+    {
+      "phase": "EDIT",
+      "tool": "advance_phase",
+      "why": "两处几何都已改完并各自落盘（共 3 次编辑动作、2 个文件）。进入复核。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "rl_cube",
+      "tool": "load",
+      "args": {
+        "path": "runs/edit07/cube_tall.gltf"
+      },
+      "why": "重新读入刚写出的长方体文件。此后所有量都来自这份文件，而不是内存里的中间对象。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "hv_cube",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@rl_cube.solids"
+      },
+      "why": "对读回的文件重量一遍。如果内存里改对了、写盘时丢了面，这一步会立刻暴露。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "rl_ball",
+      "tool": "load",
+      "args": {
+        "path": "runs/edit07/ball_cut.gltf"
+      },
+      "why": "读入第二个文件，同样从磁盘出发复核。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "hv_ball",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@rl_ball.solids"
+      },
+      "why": "读回后的球：封闭性、体积、表面积、切口是否封住。这一步与上一步的数值必须能对上。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "tool": "advance_phase",
+      "why": "两个文件都已读回并独立量过（reloaded 与 emitted 有交集），进入报告。"
+    },
+    {
+      "phase": "REPORT",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "cube_dims_before_m": [
+            2.5,
+            2.5,
+            2.5
+          ],
+          "cube_dims_after_m": [
+            2.5,
+            2.5,
+            3.0
+          ],
+          "cube_volume_before_m3": 15.625,
+          "cube_volume_after_m3": 18.75,
+          "ball_volume_before_m3": 4.184582187,
+          "ball_volume_after_m3": 3.53097369,
+          "ball_area_after_m2": 11.774676,
+          "cut_area_m2": 2.353572936,
+          "cube_closed": 1,
+          "ball_closed": 1,
+          "ball_boundary_loops": 0,
+          "ball_duplicate_faces": 0,
+          "cube_closed_after_reload": 1,
+          "ball_closed_after_reload": 1,
+          "cube_volume_after_reload_m3": 18.75,
+          "ball_volume_after_reload_m3": 3.53097369
+        },
+        "evidence": [
+          "hs_cube0",
+          "hs_ball0",
+          "cut",
+          "hs_cube1",
+          "hs_ball1",
+          "hv_cube",
+          "hv_ball"
+        ],
+        "confidence": {
+          "cube_dims_after_m": "high",
+          "ball_volume_after_m3": "high",
+          "cut_area_m2": "high"
+        },
+        "unknowns": [],
+        "notes": "正方体的上下取 z=0 为底面、z=2.5 为顶面（题目允许任选一面作底）。切口面积按网格实测 2.353573 m²，理想圆 π·0.75=2.356194 m²，差 0.111%（切口是 256 边形内接圆）；球体积同理比理想球体小 0.100%，均远在 0.3% 容差内。封闭性、破洞、重复面在读回的文件上复核，见表中 *_after_reload 项。"
+      },
+      "why": "提交。所有数字都能在 evidence 列出的六个体检步骤里找到；读回后的量与编辑后的量一致，说明落盘没有丢信息。"
+    }
+  ]
+}

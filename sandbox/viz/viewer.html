@@ -9,6 +9,7 @@
     --ink:#14181d; --ink2:#3d474f; --dim:#7d8890; --line:#e2e6ea;
     --bg:#f5f6f8; --card:#ffffff; --top:#12171c; --top2:#1c232a;
     --survey:#2f7fb5; --identify:#7d5bb5; --measure:#c08018; --verify:#2f9163;
+    --edit:#c25a2e; --reval:#1c8a8a;
     --recover:#c0413a; --report:#5a6672;
     --ok:#2f9163; --warn:#c08018; --bad:#c0413a; --idle:#7d8890;
     --mono:"JetBrains Mono","Cascadia Code",Consolas,"Courier New",monospace;
@@ -110,7 +111,17 @@
   .ev.wide .excerpt{max-height:none;mask-image:none}
   .ev.ph-SURVEY{border-left-color:var(--survey)} .ev.ph-IDENTIFY{border-left-color:var(--identify)}
   .ev.ph-MEASURE{border-left-color:var(--measure)} .ev.ph-VERIFY{border-left-color:var(--verify)}
+  .ev.ph-EDIT{border-left-color:var(--edit)} .ev.ph-REVALIDATE{border-left-color:var(--reval)}
   .ev.ph-RECOVER{border-left-color:var(--recover)} .ev.ph-REPORT{border-left-color:var(--report)}
+  /* 写层事件：改了几何、落了盘、读回自己的产物 —— 这三件事决定写层是否闭环，不能混在普通日志里 */
+  .ev.edit-ev{background:#fdf6f1;border-left-width:4px}
+  .ev.emit-ev{background:#f2f8fb;border-left-color:#3d8fbd;border-left-width:4px}
+  .ev.reload-ev{background:#f1faf7;border-left-color:#1c8a8a;border-left-width:4px}
+  .wtab{border-collapse:collapse;width:100%;font-size:11.5px;margin-top:5px}
+  .wtab th{text-align:left;font-weight:600;color:var(--ink2);border-bottom:1px solid var(--line);padding:3px 6px}
+  .wtab td{padding:3px 6px;border-bottom:1px solid #f0f2f4;font-family:var(--mono);font-size:11px}
+  .wtab td.grp{font-family:inherit;font-size:11.5px;color:var(--ink2)}
+  .dlt{color:var(--ok);font-weight:600} .dlt.neg{color:var(--bad)}
   .anom{background:#fff9ec;border-left-color:var(--warn)}
   .anom.bad{background:#fdf3f2;border-left-color:var(--bad)}
   .anom.fix{background:#f1faf5;border-left-color:var(--ok)}
@@ -174,9 +185,10 @@
 const EMB = typeof window.__RUN__ !== "undefined";
 const S = {runs:[], run:null, ev:[], idx:0, playing:false, timer:null, speed:1,
            showAll:true, scene:0, orbit:0, phaseFilter:null, onlyAnom:false};
-const PH = ["SURVEY","IDENTIFY","MEASURE","VERIFY","RECOVER","REPORT"];
+const PH = ["SURVEY","IDENTIFY","MEASURE","VERIFY","EDIT","REVALIDATE","REPORT"];
 const PCOL = {SURVEY:"var(--survey)",IDENTIFY:"var(--identify)",MEASURE:"var(--measure)",
-              VERIFY:"var(--verify)",RECOVER:"var(--recover)",REPORT:"var(--report)"};
+              VERIFY:"var(--verify)",EDIT:"var(--edit)",REVALIDATE:"var(--reval)",
+              RECOVER:"var(--recover)",REPORT:"var(--report)"};
 const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const $ = id => document.getElementById(id);
 const fmt = (x,n=3) => (x==null||isNaN(x)) ? "—" : Number(x).toFixed(n);
@@ -299,6 +311,18 @@ function renderFeed(){
     } else if(k==="phase"){
       out.push(`<div class="ev phase-ev ph-${esc(p.to)}" data-i="${i}" data-kind="phase">
         <b>${esc(p.from)} → ${esc(p.to)}</b> <span style="color:var(--ink2)">${esc((p.why||"").slice(0,240))}</span></div>`);
+    } else if(k==="geometry_edited"){
+      out.push(`<div class="ev edit-ev ph-EDIT" data-i="${i}" data-kind="edit" data-step="${esc(p.step||"")}">
+        <div class="hd"><span class="tag" style="background:#f6e2d6;color:#a8451f">几何已改</span>
+          <span class="tool">${esc(p.tool)}</span><span class="idx">步骤 ${esc(p.step||"")}</span></div>
+        <div class="why" style="font-size:12px">这一步改了场景里的网格，不是量了一下。改完必须落盘再读回，
+          否则后面所有数字都只是它自己说的。</div></div>`);
+    } else if(k==="reloaded_own_output"){
+      out.push(`<div class="ev reload-ev ph-REVALIDATE" data-i="${i}" data-kind="edit" data-step="${esc(p.step||"")}">
+        <div class="hd"><span class="tag" style="background:#d8f0ea;color:#12655f">读回自己的产物</span>
+          <span class="idx">${esc((p.path||"").split(/[\\/]/).pop())}</span></div>
+        <div class="why" style="font-size:12px">读的正是刚才写出去的那个文件 —— 只有这种读回才算复核，
+          重读原始模型不算。</div></div>`);
     } else if(k==="agent_end"){
       out.push(`<div class="ev phase-ev ph-REPORT" data-i="${i}" data-kind="phase">
         <b>结束 · ${esc(p.status)}</b> <span style="color:var(--ink2)">${p.turn!=null?p.turn+" 轮":""} ${fmt(p.elapsed_s,2)}s</span></div>`);
@@ -440,6 +464,69 @@ function followScene(sid){
   });
   if(best!==S.scene){ S.scene=best; renderShot(); }
 }
+function writeSec(){
+  const steps = S.run.steps||[];
+  const nEdit = S.ev.filter(e=>e.kind==="geometry_edited").length;
+  const emits = steps.filter(s=>s.tool==="emit");
+  const nReload = S.ev.filter(e=>e.kind==="reloaded_own_output").length;
+  if(!nEdit && !emits.length) return "";
+  // 同一实体的历次体检：第一次=改前，最后一次=改后。
+  // sid 从**返回结果**里取，不从入参里取 —— 入参可能被截断（步骤参数只留前 300 字），
+  // 早先按入参正则匹配，多实体模型上会得到一串 "?"。
+  const bySid = {}, order = [];
+  steps.filter(s=>s.tool==="mesh_health").forEach(s=>{
+    let rows=null;
+    try{ rows=JSON.parse(s.obs).rows; }catch(e){}
+    if(!rows || !rows.length) return;
+    rows.forEach(r=>{
+      const sid = r.sid || "?";
+      if(!bySid[sid]){ bySid[sid]=[]; order.push(sid); }
+      bySid[sid].push({id:s.id, r:r});
+    });
+  });
+  const dim = d => (d&&d.length) ? d.map(x=>fmt(x,3)).join("×") : "—";
+  // 「读回」之后实体会被重新编号（C001 → G000），于是一个实物在表里出现两次单值组。
+  // 这种情况标成「读回一致」比标「仅一次」有意义得多 —— 它正是写层闭环的证据。
+  const tail = {};                       // sid → 最后一次体检
+  order.forEach(sid=>{ const h=bySid[sid]; tail[sid]=h[h.length-1].r; });
+  const same = (a, b) => a && b && Math.abs(a.volume-b.volume)<=1e-4 &&
+      (a.dims||[]).length===3 && (b.dims||[]).length===3 &&
+      a.dims.every((x,i)=>Math.abs(x-b.dims[i])<=1e-4);
+  const rows = order.map(sid=>{
+    const h = bySid[sid], a = h[0].r, b = h[h.length-1].r;
+    if(h.length < 2){
+      const twin = Object.keys(tail).find(k=>k!==sid && same(tail[k], a));
+      const tag = twin ? `读回一致（= ${esc(twin)} 改后）` : "单次体检";
+      return `<tr><td>${esc(sid)}</td><td>${dim(a.dims)}</td><td>${fmt(a.volume,4)}</td>
+              <td style="font-family:inherit;color:var(--dim)">${tag}</td>
+              <td>${a.closed?"封闭":"破洞"}</td></tr>`;
+    }
+    const pct = a.volume ? (b.volume-a.volume)/a.volume*100 : 0;
+    const cls = Math.abs(pct) < 1e-6 ? "" : "dlt";
+    return `<tr><td>${esc(sid)}</td>
+      <td>${dim(a.dims)} → ${dim(b.dims)}</td>
+      <td>${fmt(a.volume,4)} → ${fmt(b.volume,4)}</td>
+      <td class="${cls}">${pct>=0?"+":""}${fmt(pct,2)}%</td>
+      <td>${a.closed&&b.closed?"封闭":"破洞"}</td></tr>`;
+  }).join("");
+  const files = emits.map(s=>{
+    let path="", bytes=null, n=null;
+    try{ path=JSON.parse(s.args).path||""; }catch(e){ path=(String(s.args).match(/"path":\s*"([^"]*)"/)||[])[1]||""; }
+    try{ const o=JSON.parse(s.obs); bytes=o.bytes; n=o.n_solids; }catch(e){}
+    return `<div class="ln"><i>▤</i><span><code style="font-family:var(--mono);font-size:11px">${esc(String(path).split(/[\\/]/).pop())}</code>
+      · ${n==null?"—":n} 个实体 · ${bytes==null?"—":bytes} B</span></div>`;
+  }).join("");
+  return `<div class="card"><h4>写层（EDIT）<span>${nEdit} 次改几何 · ${emits.length} 个产物 · ${nReload} 次读回</span></h4>
+    <div style="padding:8px 11px 11px">
+      <div class="ln ${emits.length?"ok":""}"><i>${emits.length?"✓":"✗"}</i>
+        <span>改了就落盘：${emits.length? "有产出" : "改了却没写文件（门控会拦住）"}</span></div>
+      <div class="ln ${nReload?"ok":""}"><i>${nReload?"✓":"✗"}</i>
+        <span>落盘就读回：${nReload? nReload+" 次读的是自己写出的文件" : "没有读回，改后数字不可信"}</span></div>
+      ${rows?`<table class="wtab"><tr><th>实体</th><th>尺寸 (m) 改前 → 改后</th><th>体积 (m³)</th><th>变化</th><th>封闭</th></tr>${rows}</table>
+        <div style="font-size:11px;color:var(--dim);margin-top:4px">改前 = 该实体第一次体检，改后 = 最后一次。<b>数字全部来自只读体检工具</b>，不是编辑函数自报。</div>`:""}
+      ${files}
+    </div></div>`;
+}
 function renderPanel(fresh){
   const m=S.run.meta, ans=(S.run.result.answer||{}), vals=ans.values||{};
   if(fresh) S.scene=0, S.orbit=0;
@@ -452,7 +539,8 @@ function renderPanel(fresh){
       <div class="cap" id="cap"></div>
       <div class="yaws" id="yaws"></div>
     </div>
-    <div class="card"><h4>答案 <span>${esc(ans.unit||"m")}</span></h4>
+    ${writeSec()}
+    <div class="card"><h4>答案 <span>${esc(ans.unit || (Object.keys(vals).length ? Object.keys(vals).length+" 项" : "m"))}</span></h4>
       <div class="ans" id="ansbox"></div>
       <div class="audit" id="auditbox"></div>
     </div>
@@ -467,9 +555,30 @@ function renderPanel(fresh){
     `<div class="ansrow" data-v="${esc(vals.chair)}"><span>chair（椅子）</span>
      <span class="v">${esc(vals.chair)} <span class="e">点击追证据</span></span></div>`);
   const inv = {}; Object.keys(tg).forEach(k=>inv[tg[k]] = k);   // sid → 角色名（plan 路径的答案按 sid 记）
-  Object.keys(d).forEach(k=>rows.push(
-    `<div class="ansrow" data-v="${d[k]}"><span>${esc((inv[k]||k).replace(/_/g," "))} ↔ chair</span>
-     <span class="v">${fmt(d[k],6)} m <span class="e">${esc(tg[k]||"")}</span></span></div>`));
+  const num = v => String(Number(v.toFixed(6)));
+  if(Object.keys(d).length){
+    Object.keys(d).forEach(k=>rows.push(
+      `<div class="ansrow" data-v="${d[k]}"><span>${esc((inv[k]||k).replace(/_/g," "))} ↔ chair</span>
+       <span class="v">${fmt(d[k],6)} m <span class="e">${esc(tg[k]||"")}</span></span></div>`));
+  } else {
+    // 写层任务的答案不是一张距离表，而是「改完之后的量」。键名原样列出，
+    // 便于和任务卡上的要求逐条对；数值可点，跳到产出它的那一步。
+    Object.keys(vals).forEach(k=>{
+      const v = vals[k], name = k.replace(/_/g," ");
+      if(typeof v === "number")
+        rows.push(`<div class="ansrow" data-v="${num(v)}"><span>${esc(name)}</span>
+          <span class="v">${num(v)} <span class="e">点击追证据</span></span></div>`);
+      else if(Array.isArray(v))
+        rows.push(`<div class="ansrow" data-v="${v.length?num(v[0]):""}"><span>${esc(name)}</span>
+          <span class="v">[${v.map(x=>typeof x==="number"?num(x):esc(x)).join(", ")}]</span></div>`);
+      else
+        rows.push(`<div class="ansrow"><span>${esc(name)}</span><span class="v">${esc(String(v))}</span></div>`);
+    });
+    const evs = ans.evidence||[];
+    if(evs.length) rows.push(
+      `<div class="ansrow" style="cursor:default"><span>证据步骤</span>
+       <span class="v" style="font-family:var(--mono);font-size:11px">${evs.map(esc).join(" · ")}</span></div>`);
+  }
   $("ansbox").innerHTML = rows.join("") || `<div class="empty">${esc(m.status==="GATE_BLOCKED"? "在 SURVEY 阶段就越界测量，被门控拦下：没有识别角色，也不允许测量，因此没有答案。"
         : m.status==="AUDIT_FAILED"? "提交了答案，但数字无法追溯到证据步骤，被审计拒绝 —— 这正是要展示的失败面。"
         : "这次运行没有提交答案（"+m.status+"）。")}</div>`;

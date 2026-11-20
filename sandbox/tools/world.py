@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import urllib.parse
 
 import numpy as np
 
@@ -194,7 +195,16 @@ def load_gltf(path, keep_names=False):
 
     def buf(i):
         if i not in bin_cache:
-            bin_cache[i] = open(os.path.join(base, g["buffers"][i]["uri"]), "rb").read()
+            uri = g["buffers"][i].get("uri") or ""
+            if uri.startswith("data:"):
+                # 单文件 glTF：buffer 以 base64 内嵌。编辑落盘默认走这条路，
+                # 免得一个模型散成 .gltf + .bin 两个文件、拷走时丢一半。
+                import base64
+                bin_cache[i] = base64.b64decode(uri.split(",", 1)[1])
+            elif uri:
+                bin_cache[i] = open(os.path.join(base, urllib.parse.unquote(uri)), "rb").read()
+            else:
+                raise ValueError("glTF 的 buffer %d 没有 uri（GLB 内嵌块未支持）" % i)
         return bin_cache[i]
 
     CT = {5120: np.int8, 5121: np.uint8, 5122: np.int16, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
@@ -250,7 +260,22 @@ def load_gltf(path, keep_names=False):
                 [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
             P = ((np.array(P) * s) @ R.T + t).tolist()
         solids.append(Solid(f"G{len(solids):03d}", node.get("name", "s") if keep_names else "s", P, F, "glTF"))
-    return solids, {"format": "gltf", "unit": None, "unit_source": "inferred", "header_unit": False}
+    # 单位：glTF 规范单位是米，但很多导出器写成毫米或干脆不写。优先读显式声明
+    # （asset.extras.unit），读不到再交给 decide_scale 按场景尺度推断。
+    # 这一条对 EDIT 闭环是硬要求：编辑落盘的文件若不声明单位，读回时会重新推断，
+    # 一次「加宽 1.2 m」可能被读成 1200 m，闭环就假了。
+    ex = (g.get("asset") or {}).get("extras") or {}
+    _u = str(ex.get("unit", "")).strip().lower()
+    _UMAP = {"metre": 1.0, "meter": 1.0, "m": 1.0, "metres": 1.0, "meters": 1.0,
+             "millimetre": 1e-3, "millimeter": 1e-3, "mm": 1e-3,
+             "centimetre": 1e-2, "centimeter": 1e-2, "cm": 1e-2,
+             "inch": 0.0254, "foot": 0.3048, "feet": 0.3048}
+    if _u in _UMAP:
+        meta = {"format": "gltf", "unit": _UMAP[_u],
+                "unit_source": "glTF asset.extras.unit = %s" % _u, "header_unit": True}
+    else:
+        meta = {"format": "gltf", "unit": None, "unit_source": "inferred", "header_unit": False}
+    return solids, meta
 
 
 # ---------------------------------------------------------------- USD

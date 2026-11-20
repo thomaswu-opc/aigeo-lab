@@ -26,9 +26,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS = os.path.join(HERE, "runs")
 HTML = os.path.join(HERE, "viz", "viewer.html")
 
-PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "VERIFY", "RECOVER", "REPORT"]
+PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "VERIFY", "EDIT", "REVALIDATE", "REPORT"]
 C = {"SURVEY": "\033[36m", "IDENTIFY": "\033[35m", "MEASURE": "\033[33m",
-     "VERIFY": "\033[32m", "RECOVER": "\033[31m", "REPORT": "\033[37m"}
+     "VERIFY": "\033[32m", "EDIT": "\033[38;5;166m", "REVALIDATE": "\033[38;5;37m",
+     "RECOVER": "\033[31m", "REPORT": "\033[37m"}
 OKC = {"OK": "\033[42;30m", "GATE_BLOCKED": "\033[43;30m", "AUDIT_FAILED": "\033[41;37m",
        "STALLED": "\033[45;37m", "BUDGET_EXHAUSTED": "\033[45;37m",
        "INSUFFICIENT_EVIDENCE": "\033[46;30m"}

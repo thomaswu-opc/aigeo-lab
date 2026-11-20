@@ -28,6 +28,11 @@ CASES = [
 
 
 def run(tag, model, ep, extra=None):
+    # 先删旧产物。不删的话，一次崩溃退出会让上一次的 result.json 留在原地，
+    # 矩阵读到的是「上一版代码的结果」并且照样打勾 —— 一张永远全绿的表比没有表更危险。
+    stale = os.path.join(HERE, "runs", tag, "result.json")
+    if os.path.exists(stale):
+        os.remove(stale)
     cmd = [sys.executable, "run_agent.py", "--card", "tasks/T01_2.md",
            "--model", model, "--episode", ep, "--tag", tag, "--no-video"]
     if extra:

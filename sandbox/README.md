@@ -22,6 +22,23 @@ bash reproduce.sh
 
 造 4 个变体 → 用 `run_agent.py` 跑 agent（含录像）→ 跑 2 个对抗样本 → 生成 `runs/agent_matrix.md`。
 
+写层（改模型）单独一条命令，跑完自动做独立验收：
+
+```bash
+python run_edit_all.py          # T-07 拉伸切平 → T-05 三位置与平移 → T-06 加宽改圆窗 → 验收
+python run_edit_all.py --skip-run   # 只重跑验收（读已有产物）
+```
+
+最后一步 `verify_edits.py` 用评委的立场写：**不读智能体的报告、不读 result.json**，
+只把 `runs/edit0*/` 下的 9 个模型文件读回来，用只读工具重量，再对照任务卡逐条勾。
+期望值来自原始模型的地板与题面给的坐标，不是抄答案。
+
+换输入再跑一遍（格式 / 命名 / 单位 / 90°），看写层是不是只对 IFC 有效：
+
+```bash
+python compare_edits.py         # → runs/edit_matrix.md
+```
+
 单次运行 agent：
 
 ```bash
@@ -50,6 +67,11 @@ python run_agent.py --card tasks/T01_2.md \
 | 本地观测台 | `python view.py` | 起 `127.0.0.1:8765`：左选 run，中间逐步回放，右侧画面随步骤切换 |
 | 单文件导出 | `python view.py export ag_ifc` | 生成 `runs/ag_ifc/viewer.html`，**双击即看**，不起服务、不装依赖；加 `--inline` 连帧一起内嵌，得到一个可随手带走的 HTML |
 
+写层的运行在观测台里有专门位置：时间线上「几何已改」「读回自己的产物」各自成一种醒目的条，
+右侧多一张 **写层（EDIT）** 卡片，把每个实体改前/改后的尺寸与体积并排列出
+（`C001 2.5×2.5×2.5 → 2.5×2.5×3.0`，`15.6250 → 18.7500 +20.00%`），
+下面列出这次写出去了哪几个文件、各多少字节。这些数字全部取自只读体检工具，不是编辑函数自报。
+
 观测台读四份既有产物，不为展示多写一份数据：`events.jsonl`（账本：谁在哪一步做了什么、为什么）、
 `steps.json`（每步的完整观察）、`frames/manifest.json`（每帧属于哪一步）、`result.json`
 （答案 / 审计 / 门控 / 失败升级）。
@@ -70,18 +92,61 @@ python run_agent.py --card tasks/T01_2.md \
 
 | 机制 | 位置 | 为什么必须有 |
 |---|---|---|
-| **六阶段门控** | `PHASE_TOOLS` | SURVEY 阶段调不了 `distance`，REPORT 阶段调不了 `select`。越界被拒并留痕 `gate_reject`。**从结构上排除「跳过识别直接答题」** |
+| **七阶段门控** | `PHASE_TOOLS` | SURVEY 阶段调不了 `distance`，REPORT 阶段调不了 `select`。越界被拒并留痕 `gate_reject`。**从结构上排除「跳过识别直接答题」**。第七阶段 `REVALIDATE` 的白名单里**没有编辑工具**，见下一节 |
 | **步骤语义标签** | `_call(label=…)` | 引用用 `@win.items` 而不是 `@s4.items`。失败恢复多耗几轮也不会让引用错位；证据清单变成可读的一串名字 |
 | **观察压缩** | `agent/schema.observe` | 只对「长清单的元素」做字段白名单，嵌套元信息保持完整。工具输出原样灌给 LLM 会让它淹没后开始编 |
 | **失败升级而非退出** | `_enter_recover` | `expect_n` 不符 → 进 RECOVER，把诊断交给策略自救，成功后 `failure_resolved`。45° 变体就是靠这条自愈的 |
 | **答案审计** | `_audit` | 提交的每个数字必须能在某个证据步骤的输出里真实出现过（1e-6 相对容差）。**「编一个看起来合理的数」在结构上不可能通过** |
-| **预算 / 停滞** | `max_turns` / `_sig_count` | 同一调用重复三次判停滞；墙钟上限。收尾状态按「被什么挡住」命名：`GATE_BLOCKED` / `AUDIT_FAILED` / `INSUFFICIENT_EVIDENCE` |
+| **预算 / 停滞** | `max_turns` / `_sig_count` | 同一调用重复三次判停滞；墙钟上限。收尾状态按「被什么挡住」命名：`GATE_BLOCKED` / `AUDIT_FAILED` / `INSUFFICIENT_EVIDENCE`。几何被改过之后签名计数清空 —— 「改前量一次、改后量一次」是写层最该做的动作，不能判成原地打转 |
+
+## 写层（EDIT）：改完必须落盘再读回
+
+前四阶段把模型读成数字；写层的任务反过来，要**改出一个新的模型**。这里最容易糊弄的地方在于：
+编辑函数自己就能返回「改完之后体积是多少」。如果直接把这个数写进答案，整条链就成了自证 ——
+工具说自己改对了，然后就没人再问。
+
+所以写层加了两条无法绕过的纪律，每条都由阶段机强制：
+
+| 纪律 | 实现 | 被违反时会怎样 |
+|---|---|---|
+| **改了就落盘** | `EDIT` 阶段的门控是 `(not edits) or bool(emitted)` | 动了几何却没有 `emit` 写出文件，离开 EDIT 阶段被拒 |
+| **落盘就读回** | `REVALIDATE` 的门控是 `bool(reloaded & emitted)` | 读回的文件不是自己刚写出去的那个，进不了 REPORT；`REVALIDATE` 的白名单里没有编辑工具，想边改边复核也不行 |
+
+`load` 一个文件不算复核，**只有读回自己写出去的那个路径**才记 `reloaded_own_output`
+（拿原始模型重读一遍是看没改过的东西）。落盘格式为单文件 glTF（内嵌 base64 缓冲）或 OBJ，
+读回时沿 `asset.extras.unit` 恢复单位，不走对角线先验。
+
+三条编辑原语，全部与任务无关：
+
+| 工具 | 做什么 | 用在 |
+|---|---|---|
+| `translate` | 整体平移，返回 `delta` 与前后包围盒 | T-05 的平移方案（位移量直接来自返回值） |
+| `stretch_axis` | 沿轴分段线性重映射 `[[from,to],…]`，段外按最外段斜率外推 | T-06 加宽、T-07 抬顶面 |
+| `cut_plane` | 半空间逐三角裁剪 + 切口接环 + 耳切封口 | T-07 球切平 |
+| `reopen_round` | 把矩形开口按面积重建为圆（半径由实际采样点的多边形面积反算） | T-06 方窗改圆窗 |
+
+`stretch_axis` 是「参数化」的全部秘密：一张锚点表同时决定地板、后墙、右墙、窗框、画框的位移，
+加宽只是换表里的两个数。后墙必须给四段锚点（洞左拉伸/洞身平移/洞右拉伸），
+只用一段会把窗洞一起拉宽 —— 这类错误只有量了洞口宽度才会暴露。
+
+**改完怎么知道自己改对了**：`mesh_health` 是只读体检，给封闭性、边界环数、非流形边、重复面、
+欧拉特征、体积、表面积、尺寸。判据很硬：闭合球段 `euler=2`，带一个洞的板 `euler=0`。
+切球后若 `euler` 不是 2，说明封口失败；若 `n_boundary_loops>0`，说明有破洞。
+这套体检在编辑时做一遍、读回后再做一遍，两边必须一致。
+
+实测（`runs/edit0*/`，三项独立验收 32/32 通过）：
+
+| 任务 | 产物 | 关键量 |
+|---|---|---|
+| T-07 | 长方体 + 切平球 | 2.5×2.5×3.0 / 18.75 m³；球保留高 1.5、体积 3.530974（理想 3.534292）、封闭无破洞、`euler=2` |
+| T-05 | 椅子四个副本 | 距门 0.47 / 1.37 / 1.1962 / 1.02 m，占地均在预期位置 |
+| T-06 | 房间 6.0 方窗 / 6.0 圆窗 / 5.4 圆窗 | 净宽 6.0、5.4；洞口面积 1.96；中心 7.6 / 7.3；后墙封闭 |
 
 ## 结构与文件
 
 ```
 run_agent.py       agent 入口：跑循环、留痕、出报告与录像
-agent/loop.py      编排层：六阶段状态机 + 门控 + 失败升级 + 答案审计 + 预算
+agent/loop.py      编排层：七阶段状态机 + 门控 + 失败升级 + 答案审计 + 预算
 agent/policy.py    决策层：Recorded / LLM / Fallback 三种策略，同一接口
 agent/schema.py    工具 → LLM 规格；工具输出 → 可决策的观察
 episodes/*.json    决策记录（可回放）；adv_*.json 是故意做坏的对抗样本
@@ -91,7 +156,9 @@ core/runtime.py    哈希链账本 + 工具总线 + 引用解析（无 eval）
 tools/world.py     6→1 读入层：IFC/OBJ/glTF/USD → 世界坐标三角网格；裁决单位与朝向
 tools/geom.py      度量内核：距离（含见证点）、体积、截面、法向聚类、场景主方向
 tools/brep.py      三角汤 → 面结构：共面区域、边界环、内环（开口）、缺口面积
-tools/ops.py       13 个注册工具，全部与任务无关
+tools/edit.py      写层：焊接/裁剪/接环/耳切封口/圆孔重建，改完给 before/after 可核对量
+tools/checks.py    判据：占地矩形与中心、到线段的平面间隙、洞口底边推导
+tools/ops.py       22 个注册工具，全部与任务无关
 viz/render.py      无头渲染（PIL 正交投影 + 画家算法），不需要显卡
 view.py            观测层：CLI 列表 / 终端时间线 / 本地观测台 / 单文件导出
 viz/viewer.html    观测台前端（单文件、零外部依赖，导出时内嵌数据）
@@ -100,12 +167,22 @@ plans/*.json       执行器用的 plan：只有工具调用与引用，没有�
 mutate.py          造变体：换格式 / 随机化对象名 / 刚体旋转 / 改单位
 compare.py         执行器的泛化矩阵
 compare_agent.py   agent 的泛化 + 防作弊矩阵
+run_edit_all.py    写层一键跑 + 独立验收
+verify_edits.py    只读磁盘产物、对照任务卡验收（不读智能体的报告）
+compare_edits.py   写层泛化矩阵：换格式/命名/单位/朝向，产出的模型是否一致
+make_T06_episode.py  T-06 决策记录的生成器（锚点表即参数，换参数即换记录）
 ```
 
-## 13 个工具
+## 22 个工具
 
-`load` `clusters` `principal_frame` `select` `pick` `merge` `contains` `gaps`
-`distance` `rank` `section` `segment` `answer`
+读（10）：`load` `clusters` `principal_frame` `select` `pick` `merge` `contains` `gaps`
+`distance` `rank`
+
+分析（3）：`section` `segment` `answer`
+
+写（4）：`translate` `stretch_axis` `cut_plane` `reopen_round`
+
+判据 / 产出（5）：`mesh_health` `footprint` `clearance` `opening_edge` `emit`
 
 + 2 个控制动作（不进几何总线，由编排层拦截）：`advance_phase` `declare_insufficient`
 
@@ -123,6 +200,7 @@ compare_agent.py   agent 的泛化 + 防作弊矩阵
 | 答案不可编造 | `episodes/adv_fabricate.json` 提交假数字 → `AUDIT_FAILED`，并逐条列出无法溯源的数值 |
 | 每步可回溯 | `events.jsonl` 哈希链，改一字节即断链 |
 | 换模型重跑不变 | `runs/agent_matrix.md`：格式/命名/单位/90° 全一致；45° 触发自救仍一致 |
+| 写层不自证 | 编辑后必须 `emit` 落盘、必须读回**自己写出的那个文件**才能进 REPORT；`verify_edits.py` 用评委立场只读文件重量 |
 | 失效就说不知道 | 证据不足时 `status=INSUFFICIENT_EVIDENCE`，不给错数 |
 | 录像即账本 | `frames/manifest.json` 记录每帧对应的阶段与角度，视频由帧编码，非录屏 |
 
@@ -171,14 +249,19 @@ python run_agent.py --card tasks/T01_2.md --model <model> --llm auto --max-turns
 
 ## 已知限制（写在明处）
 
-1. **EDIT 层缺失** —— 06 的加宽联动、07 的拉伸与切平、05.4 的修正平移，需要网格布尔与流形检查，尚未实现。
-2. **扫掠碰撞缺失** —— 08 的 0.1° 开门扫掠、10 的下降穿插，需要 CCD 或扫掠体求交。
-3. **曲面只有二分类** —— 球/柱/锥尚未解析拟合，只能给「光滑闭合曲面」，给不出解析半径。
-4. **`principal_frame` 只处理绕竖轴旋转** —— 它把 z′ 固定为世界 Z；真正倾斜（斜墙、坡屋面）会落进 `up_confident=false` 分支。
-5. **`clusters` 的边界依赖主参照系** —— 已在主参照系下聚类（世界轴 AABB 只是真实距离的下界，
+1. **扫掠碰撞缺失** —— 08 的 0.1° 开门扫掠、10 的下降穿插，需要 CCD 或扫掠体求交。
+2. **写层只做平面切割，不做一般布尔** —— `cut_plane` 是半空间裁剪；两实体互相穿插（08 的扫掠体、10 的插脚进入凹槽）需要实体布尔，尚未实现。
+3. **写层的锚点与位移按世界轴写** —— `stretch_axis` 的锚点、`translate` 的 delta 都是米制世界坐标。
+   跑 `compare_edits.py` 可以看到后果：T-07 绕竖轴转 90° 仍一致（它只动 z），
+   而 T-05 / T-06 转 90° 后不一致并被判 `AUDIT_FAILED` —— 房间的「左右」不再对应世界 x。
+   要修得让锚点跟场景参照系走；**目前的行为是可接受的：失败被审计抓到，而不是悄悄给出错模型**。
+4. **圆孔按多边形近似** —— 48 段，面积精确到 1e-6，但外接方框宽 1.5828 而非 πr 的 1.5799；追求解析圆需要曲面拟合。
+5. **曲面只有二分类** —— 球/柱/锥尚未解析拟合，只能给「光滑闭合曲面」，给不出解析半径。
+6. **`principal_frame` 只处理绕竖轴旋转** —— 它把 z′ 固定为世界 Z；真正倾斜（斜墙、坡屋面）会落进 `up_confident=false` 分支。
+7. **`clusters` 的边界依赖主参照系** —— 已在主参照系下聚类（世界轴 AABB 只是真实距离的下界，
    旋转时最多膨胀 √2 倍：45° 时火箭与房间的间隙从 2.8 m 塌到 0.71 m，三簇并成一簇）。
    残留风险：若场景没有显著平面朝向（全曲面场景），`frame.used` 会退回 `world` 并标注，
    此时判据退化到世界轴。`consistency.agree=false` 就是给 agent 的显式信号。
-6. **LLM 策略尚未收敛到「提交答案」** —— 见下一节，这是当前最大的未完成项。
-7. **`distance` 对相交网格返回 0**，不区分「接触 / 穿透 / 含于内部」。
-8. **`FBX` / `.blend` 不支持**，需离线转 OBJ。
+8. **LLM 策略尚未收敛到「提交答案」** —— 见下一节，这是当前最大的未完成项。
+9. **`distance` 对相交网格返回 0**，不区分「接触 / 穿透 / 含于内部」。
+10. **`FBX` / `.blend` 不支持**，需离线转 OBJ。
