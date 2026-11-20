@@ -1,0 +1,257 @@
+{
+  "note": "对抗样本：答案里的距离是编的。用来验证答案审计真的会拒绝。",
+  "card": "tasks/T01_2.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "先读模型。keep_metadata=false 是硬要求：本题只能用几何描述量判断角色，不许看名称与类别。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "clusters",
+      "tool": "clusters",
+      "args": {
+        "items": "@load.solids",
+        "tol": 1.0
+      },
+      "why": "文件里可能同时装着房间、球体与立方体、火箭与平台三组互不相连的模型。先分离，避免把别的模型的实体当候选。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "pf",
+      "tool": "principal_frame",
+      "args": {
+        "items": "@clusters.groups[0].items"
+      },
+      "why": "先估计房间自身的朝向。若模型整体不与坐标轴对齐（旋转过的变体），基于包围盒的「薄/长/方」会全部失效，必须先拿到参照系备用。"
+    },
+    {
+      "phase": "SURVEY",
+      "tool": "advance_phase",
+      "why": "已读入、已分离出互不相连的组，并已算出场景参照系（覆盖率与轴向偏差在 pf 的 info 里）。进入角色识别。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "win",
+      "tool": "select",
+      "args": {
+        "items": "@clusters.groups[0].items",
+        "where": {
+          "d0>=": 1.35,
+          "d0<=": 1.45,
+          "d1>=": 1.35,
+          "d1<=": 1.45,
+          "d2<=": 0.3
+        }
+      },
+      "why": "窗框的特征最独特：外轮廓 1.4×1.4 的正方形且很薄。先用世界轴试探——它是最省的坐标系，成立就不必再付参照系变换的账。",
+      "expect_n": 1,
+      "on_fail": [
+        {
+          "label": "win_retry",
+          "tool": "select",
+          "args": {
+            "items": "@pf.items_frame",
+            "where": {
+              "d0>=": 1.35,
+              "d0<=": 1.45,
+              "d1>=": 1.35,
+              "d1<=": 1.45,
+              "d2<=": 0.3
+            }
+          },
+          "why": "世界轴下找不到 1.4×1.4 的薄方环：不是判据错，是模型整体被旋转过，包围盒量失真。改用场景法向簇建立的参照系重算，同一判据重试。",
+          "expect_n": 1,
+          "alias": "win"
+        },
+        {
+          "tool": "advance_phase",
+          "why": "参照系已切换并重试成功，回到识别阶段继续对齐其余角色。"
+        }
+      ]
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "leaf",
+      "tool": "select",
+      "args": {
+        "items": "@pf.items_frame",
+        "where": {
+          "axis_aligned": false,
+          "min_thickness<=": 0.06,
+          "d0>=": 1.5
+        }
+      },
+      "why": "门扇的判据不是「薄板」而是「薄板且朝向与房间墙不平行」——门是开着的。该判据在场景参照系里同样成立，因此与是否旋转无关。",
+      "expect_n": 1
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "pic",
+      "tool": "select",
+      "args": {
+        "items": "@pf.items_frame",
+        "where": {
+          "d0>=": 1.15,
+          "d0<=": 1.25,
+          "d1>=": 0.85,
+          "d1<=": 0.95,
+          "d2<=": 0.1
+        }
+      },
+      "why": "画框是 1.2×0.9 的矩形薄环。与窗框靠长宽比（1.33 vs 1.0）区分，与门扇靠「是否与墙平行」区分。",
+      "expect_n": 1
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "chair",
+      "tool": "select",
+      "args": {
+        "items": "@pf.items_frame",
+        "where": {
+          "d0>=": 0.7,
+          "d0<=": 1.1,
+          "d1>=": 0.35,
+          "d2>=": 0.3,
+          "z_min>=": -0.006,
+          "z_min<=": 0.006
+        }
+      },
+      "why": "椅子：落地（z_min≈0）、高度 0.7–1.1、非薄板（最小边 ≥0.3）。三条正交条件把它与墙、门、框、洞口占位体全部区分开。",
+      "expect_n": 1
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "targets",
+      "tool": "merge",
+      "args": {
+        "lists": [
+          "@leaf.items",
+          "@win.items",
+          "@pic.items"
+        ]
+      },
+      "why": "把三个目标实体合成一份候选清单，供下一步一次性排序。",
+      "expect_n": 3
+    },
+    {
+      "phase": "IDENTIFY",
+      "tool": "advance_phase",
+      "why": "四个角色都已压到唯一命中（窗框、门扇、画框、椅子），没有留下「看着像」的候选。进入测量。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "rank",
+      "tool": "rank",
+      "args": {
+        "a": "@chair.items[0].sid",
+        "items": "@targets.items"
+      },
+      "why": "对三个目标逐一算最短表面距离并升序排列。返回里带见证点对，是这些数字唯一可复核的凭据。"
+    },
+    {
+      "phase": "MEASURE",
+      "tool": "advance_phase",
+      "why": "三个距离已算出并带见证点。进入独立复核。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "recheck",
+      "tool": "distance",
+      "args": {
+        "a": "@chair.items[0].sid",
+        "b": "@win.items[0].sid"
+      },
+      "why": "用单条调用重算窗口这一对，与 rank 里的同一项对比。rank 是批量路径、distance 是单条路径，两者一致才说明批量逻辑没有错位。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "pick_win",
+      "tool": "pick",
+      "args": {
+        "items": "@rank.rows",
+        "key": "sid",
+        "value": "@win.items[0].sid"
+      },
+      "why": "把窗框的测量行按 sid 对齐，避免在最终报告里靠行序猜哪一行是哪一对。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "pick_leaf",
+      "tool": "pick",
+      "args": {
+        "items": "@rank.rows",
+        "key": "sid",
+        "value": "@leaf.items[0].sid"
+      },
+      "why": "同上，对齐门扇的测量行。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "pick_pic",
+      "tool": "pick",
+      "args": {
+        "items": "@rank.rows",
+        "key": "sid",
+        "value": "@pic.items[0].sid"
+      },
+      "why": "同上，对齐画框的测量行。"
+    },
+    {
+      "phase": "VERIFY",
+      "tool": "advance_phase",
+      "why": "复核项齐备：见证点、独立重算、行对齐。进入提交。"
+    },
+    {
+      "phase": "REPORT",
+      "label": "done",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "unit": "m",
+          "chair": "@chair.items[0].sid",
+          "targets": {
+            "door_leaf": "@leaf.items[0].sid",
+            "window_frame": "@win.items[0].sid",
+            "picture_frame": "@pic.items[0].sid"
+          },
+          "distances_m": {
+            "door_leaf": 0.42,
+            "window_frame": 1.85,
+            "picture_frame": 3.1
+          }
+        },
+        "evidence": [
+          "load",
+          "clusters",
+          "pf",
+          "win",
+          "leaf",
+          "pic",
+          "chair",
+          "targets",
+          "rank",
+          "recheck",
+          "pick_win",
+          "pick_leaf",
+          "pick_pic"
+        ],
+        "confidence": {
+          "targets": "high",
+          "distances_m": "high"
+        },
+        "unknowns": [
+          "任务卡未明确「椅子到门窗的距离」的测量基准。本解取表面到表面最短距离并给出见证点；若要求中心到中心或占地边界到边界，数值会不同。",
+          "任务卡未明确「距离」是到门扇还是到门洞。本解取到门扇（实际构件）；到门洞占位体的值更小，已在 win 的候选集合里被排除（薄于洞深）。"
+        ],
+        "notes": "角色识别全程只用几何描述量（尺寸、厚度、法向朝向、落地标高），未读取名称、类别、材质或父子关系。距离为三角网格上的精确最短表面距离，见证点落在各自表面上（复核残差 <1e-5 m）。场景参照系由面法向的面积加权簇估计，覆盖率与轴向偏差记录在 pf。"
+      }
+    }
+  ]
+}

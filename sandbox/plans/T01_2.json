@@ -1,0 +1,190 @@
+{
+  "card": "tasks/T01_2.md",
+  "task_id": "T01.2",
+  "author": "agent",
+  "note": "本 plan 由智能体读卡后生成，是可复核的数据而非代码：不含控制流、不含公式，只有工具调用与证据引用。",
+  "scope": "@s2.groups[0].items",
+  "params": {
+    "cluster_tol": 1.0,
+    "wall_d0_min": 3.5,
+    "wall_t_max": 0.25,
+    "leaf_t_max": 0.06,
+    "leaf_h_min": 1.5,
+    "win_side_lo": 1.35,
+    "win_side_hi": 1.45,
+    "win_t_max": 0.3,
+    "pic_w_lo": 1.15,
+    "pic_w_hi": 1.25,
+    "pic_h_lo": 0.85,
+    "pic_h_hi": 0.95,
+    "pic_t_max": 0.1,
+    "chair_h_lo": 0.7,
+    "chair_h_hi": 1.1,
+    "chair_side_min": 0.35,
+    "chair_t_min": 0.3
+  },
+  "steps": [
+    {
+      "id": "s1",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "读入模型。keep_metadata=false：不保留名称与类别，从源头断掉语义作弊。"
+    },
+    {
+      "id": "s2",
+      "tool": "clusters",
+      "args": {
+        "items": "@s1.solids",
+        "tol": 1.0
+      },
+      "why": "文件里有三组互不相邻的模型；取最大连通体簇作为本次要处理的房间。"
+    },
+    {
+      "id": "s3",
+      "tool": "select",
+      "args": {
+        "items": "@s2.groups[0].items",
+        "where": {
+          "d2<=": 0.25,
+          "d0>=": 3.5,
+          "z_min>=": -0.006,
+          "z_min<=": 0.006
+        }
+      },
+      "why": "薄、长、落地的竖向板 = 墙。用来给后面的角色识别提供场景骨架。",
+      "expect_n": 3
+    },
+    {
+      "id": "s4",
+      "tool": "select",
+      "args": {
+        "items": "@s2.groups[0].items",
+        "where": {
+          "axis_aligned": false,
+          "min_thickness<=": 0.06,
+          "d0>=": 1.5
+        }
+      },
+      "why": "门扇：唯一一块「薄、高、主法向不与坐标轴对齐」的板 —— 因为它处于开启状态。",
+      "expect_n": 1
+    },
+    {
+      "id": "s5",
+      "tool": "select",
+      "args": {
+        "items": "@s2.groups[0].items",
+        "where": {
+          "d0>=": 1.35,
+          "d0<=": 1.45,
+          "d1>=": 1.35,
+          "d1<=": 1.45,
+          "d2<=": 0.3
+        }
+      },
+      "why": "窗框：正方形薄环；d2<=0.3 用来排除同为 1.4×1.4 但厚 0.6 的洞口占位体。",
+      "expect_n": 1
+    },
+    {
+      "id": "s6",
+      "tool": "select",
+      "args": {
+        "items": "@s2.groups[0].items",
+        "where": {
+          "d0>=": 1.15,
+          "d0<=": 1.25,
+          "d1>=": 0.85,
+          "d1<=": 0.95,
+          "d2<=": 0.1
+        }
+      },
+      "why": "画框：非正方形的薄矩形框。与窗框靠「边长比」分开，靠 s3 的墙贯通性做二次确认。",
+      "expect_n": 1
+    },
+    {
+      "id": "s7",
+      "tool": "select",
+      "args": {
+        "items": "@s2.groups[0].items",
+        "where": {
+          "d0>=": 0.7,
+          "d0<=": 1.1,
+          "d1>=": 0.35,
+          "d2>=": 0.3,
+          "z_min>=": -0.006,
+          "z_min<=": 0.006
+        }
+      },
+      "why": "椅子：落地、高度与人坐姿量级相当、且不是薄板。三个条件同时成立才唯一。",
+      "expect_n": 1
+    },
+    {
+      "id": "s8",
+      "tool": "gaps",
+      "args": {
+        "sid": "@s7.items[0].sid",
+        "items": "@s3.items",
+        "limit": 4
+      },
+      "why": "反向校验：椅子到各墙的包围盒间隙应为正（在房间里、未穿墙），否则 s7 抓到的不是椅子。"
+    },
+    {
+      "id": "s9",
+      "tool": "merge",
+      "args": {
+        "lists": [
+          "@s4.items",
+          "@s5.items",
+          "@s6.items"
+        ]
+      },
+      "why": "合并三个目标作为排序候选集。"
+    },
+    {
+      "id": "s10",
+      "tool": "rank",
+      "args": {
+        "a": "@s7.items[0].sid",
+        "items": "@s9.items"
+      },
+      "why": "逐个算最短表面距离并升序排序；比较由内核完成，LLM 不参与。"
+    },
+    {
+      "id": "s11",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "chair": "@s7.items[0].sid",
+          "targets": {
+            "door_leaf": "@s4.items[0].sid",
+            "window_frame": "@s5.items[0].sid",
+            "picture_frame": "@s6.items[0].sid"
+          },
+          "distance_ranking": "@s10.rows"
+        },
+        "evidence": [
+          "s2",
+          "s3",
+          "s4",
+          "s5",
+          "s6",
+          "s7",
+          "s8",
+          "s10"
+        ],
+        "confidence": {
+          "door_leaf": "high",
+          "window_frame": "medium",
+          "picture_frame": "medium"
+        },
+        "unknowns": [
+          "「窗框」是否含玻璃、「画框」是否含画芯：题面未定义，本解只取框体；若计入，两个距离会变小。",
+          "门扇是否含门把手：题面写「门扇」，本解不含把手；含把手会使该距离变大。"
+        ],
+        "notes": "识别全部基于几何描述量（最长三维、法向对齐性、法向厚度、落地性），未读取任何名称/类别/属性。"
+      }
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "note": "对抗样本：跳过识别直接测量。用来验证阶段门控真的会拒绝。",
+  "card": "tasks/T01_2.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "先读模型。keep_metadata=false 是硬要求：本题只能用几何描述量判断角色，不许看名称与类别。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "sneak",
+      "tool": "distance",
+      "args": {
+        "a": "C017",
+        "b": "C011"
+      },
+      "why": "（作弊尝试）不识别角色，直接用猜到的 sid 测距离。"
+    }
+  ]
+}

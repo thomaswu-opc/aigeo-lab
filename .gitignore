@@ -1,0 +1,38 @@
+# ---------------- 赛方数据：不入库 ----------------
+# 模型包（IFC / USD / glTF / OBJ / FBX / Blender）体积大、版权归赛方，按 README 说明自行下载
+pkg/
+models.zip
+*.ifc
+*.usd
+*.usda
+*.usdc
+*.gltf
+*.glb
+*.bin
+*.obj
+*.mtl
+*.fbx
+*.blend
+
+# ---------------- 运行产物：可复现，不入库 ----------------
+# 每次运行都会重写：账本、报告、帧、视频、矩阵
+sandbox/runs/
+sandbox/variants/
+sandbox/**/frames/
+*.mp4
+
+# ---------------- 常规 ----------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# ---------------- 早期探索脚本（已被 sandbox/tools 取代，仅留本地） ----------------
+/probe.py
+/brep.py

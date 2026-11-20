@@ -1,0 +1,9 @@
+numpy>=1.24
+pillow>=10
+
+# 可选：读取 USD（tools/world.py 会尝试 from pxr import Usd，缺失时该格式不可读）
+# usd-core>=23.11
+
+# 说明：
+#  - IFC / OBJ / glTF / FBX 由 tools/world.py 自带解析，不依赖 ifcopenshell 等重型库
+#  - 录像用系统 ffmpeg（tools/world.py 不调用，viz/render.py 通过 subprocess 调用）

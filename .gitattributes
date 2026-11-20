@@ -1,0 +1,9 @@
+# 统一换行，保证 reproduce.sh 在 Linux/macOS 上能直接跑
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.mp4 binary
