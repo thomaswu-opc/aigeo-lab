@@ -185,6 +185,17 @@ const fmt = (x,n=3) => (x==null||isNaN(x)) ? "—" : Number(x).toFixed(n);
 async function boot(){
   const r = await fetch("/api/runs").then(r=>r.json());
   S.runs = r.runs.sort((a,b)=> (a.kind!=="key") - (b.kind!=="key") || b.mtime-a.mtime);
+  if(!S.runs.length){
+    $("runs").innerHTML = `<div class="rgroup">还没有运行记录</div>
+      <div style="padding:0 8px 12px;font-size:12px;line-height:1.7;color:var(--ink2)">
+      先在仓库根目录跑一次：<br><code style="font-family:var(--mono);font-size:11px">bash sandbox/reproduce.sh</code><br>
+      或直接双击 <code style="font-family:var(--mono);font-size:11px">docs/demo/viewer_ag_ifc.html</code>
+      （自包含快照，不用装环境）。</div>`;
+    $("feed").innerHTML = `<div class="intro"><h3>观测台没有可显示的运行</h3>
+      <p>本页面读 <code>sandbox/runs/&lt;tag&gt;/</code> 下的账本、观察、帧与结果。
+      这些是运行产物，不入库；跑一次 <code>bash sandbox/reproduce.sh</code> 就会出现。</p></div>`;
+    return;
+  }
   renderRuns();
   const first = S.runs.find(x=>x.kind==="key" && x.has_video) || S.runs[0];
   if(first) pick(first.tag);

@@ -49,6 +49,8 @@ def main():
     ap.add_argument("--pivot", default="bbox", choices=["bbox", "origin"])
     ap.add_argument("--seed", type=int, default=7)
     a = ap.parse_args()
+    if not os.path.exists(a.src):
+        raise SystemExit("找不到源模型：%s\n赛方模型包不随仓库分发，见 README「一分钟上手」。" % a.src)
 
     solids, meta = world.load(a.src)          # 已经做过单位裁决，坐标系=米
     allP = np.vstack([s.P for s in solids])

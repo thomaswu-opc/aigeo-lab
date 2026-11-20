@@ -39,6 +39,8 @@ python sandbox/view.py export ag_ifc      # 导出单文件 HTML，双击即看
 **不想装环境也能看**：`docs/demo/viewer_ag_ifc.html` 是基准运行的自包含快照
 （41 条账本事件 + 33 帧画面内嵌在一个文件里），双击打开，游标走一步、右侧画面跟着换。
 
+![观测台](docs/demo/screenshot.png)
+
 ## 与赛事要求的对应
 
 | 赛事要求（原文要点） | 本仓库怎么满足 | 看哪里 |

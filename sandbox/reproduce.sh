@@ -7,6 +7,13 @@ MODEL=../pkg/AI-Geometry-Models/IFC/AI_Geometry_Input.ifc
 CARD=tasks/T01_2.md
 EP=episodes/T01_2.agent.json
 
+if [ ! -f "$MODEL" ]; then
+  echo "[!] 找不到模型包：$MODEL"
+  echo "    赛方模型不随仓库分发。下载 https://hack26.ctrlpath.co/api/tasks/download"
+  echo "    解压后应存在 pkg/AI-Geometry-Models/IFC/AI_Geometry_Input.ifc（见 README）。"
+  exit 1
+fi
+
 echo "== 1. 造变体 =="
 python mutate.py --src "$MODEL" --out variants/obj_plain.obj
 python mutate.py --src "$MODEL" --out variants/obj_rot90.obj --rot-z 90
