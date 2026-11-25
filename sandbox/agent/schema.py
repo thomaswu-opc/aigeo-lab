@@ -311,18 +311,30 @@ def _trim(o, nd=4, in_list=False, depth=0):
 # 差了整整一个量级（0.41 vs 0.04）。只给 d2 时，模型分不清「薄板」和「细长条」，
 # 于是把门套横档当成门扇候选、把贯穿墙厚的洞口盒当成实心块，判据从一开始就歪了。
 _SLIM_KEYS = ("sid", "n", "d0", "d1", "d2", "sx", "sy", "sz", "min_thickness",
-              # h_long_axis / h_long / h_short：水平长边落在哪根轴上。压掉它，
-              # 模型就得自己比 sx 与 sy —— 实测它在旋转过的房间上比反了。
-              "h_long_axis", "h_long", "h_short",
+              # 只留「长边落在哪根轴」这个比较结论（h_long_axis）；h_long/h_short 与
+              # max(sx,sy) 重复，压掉它们能让 20 条实体一次全列出来 —— 对「逐项列举」
+              # 类任务来说，看得全比看得细重要。
+              "h_long_axis",
               "z_min", "axis_aligned")
 
 
-def _slim_rows(rows):
-    """把一串实体指纹压成「一行一个实体」。只在原样塞不下时才用。"""
+def _slim_rows(rows, nd=3):
+    """把一串实体指纹压成「一行一个实体」。只在原样塞不下时才用。
+
+    数值压到 3 位小数：几何判据的分辨率是毫米，第 4 位以后只有浮点噪声
+    （"1.999999" 这种）。不压的话 20 条实体总长 3554 字符，刚好越过 3224 的预算，
+    于是退化成「只显示前 5 条」—— 而「逐项列举」类任务就再也凑不齐 16 个实体。
+    """
+    def _r(v):
+        if isinstance(v, bool) or not isinstance(v, float):
+            return v
+        r = round(v, nd)
+        return int(r) if abs(r - int(r)) < 1e-12 else r
+
     out = []
     for it in rows:
         if isinstance(it, dict) and "sid" in it and ("d0" in it or "dims" in it):
-            out.append({k: it[k] for k in _SLIM_KEYS if k in it})
+            out.append({k: _r(it[k]) for k in _SLIM_KEYS if k in it})
         else:
             out.append(it)
     return out

@@ -271,8 +271,11 @@ class LLMPolicy(Policy):
         cut = max(0, len(steps) - self.keep_full)
         hist = ["| 步 | 阶段 | 工具 | 命中 | 意图 |", "|---|---|---|---|---|"]
         for s in steps[:cut]:
-            hist.append("| %s | %s | %s | %s | %s |" % (
-                s.get("id"), s.get("phase", ""), s.get("tool", ""),
+            # 失败/被拒的步骤打叉：它们没有返回值，写进 evidence 会被判「不存在」。
+            # 不打叉时模型会照抄步骤名去引用，然后被审计拒三次、整轮 STALLED（实测 T09）。
+            mark = "✗" if (s.get("error") or s.get("rejected")) else ""
+            hist.append("| %s%s | %s | %s | %s | %s |" % (
+                s.get("id"), mark, s.get("phase", ""), s.get("tool", ""),
                 s.get("n", "—"), (s.get("why") or "")[:60]))
         recent = []
         for s in steps[cut:]:

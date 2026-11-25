@@ -812,7 +812,12 @@ class Loop:
         known = set(self.results)
         for e in ev:
             if e not in known:
-                problems.append("证据 %s 不存在（证据只写步骤 id，不要写 @引用路径）" % e)
+                # 报出"最像的那几个现有 id"：模型常常引用一个自己以为做过、实际失败的步骤，
+                # 只说"不存在"它会换个名字再试，三轮就把整轮判死。
+                near = [k for k in known if k.startswith(e[:4]) or e.startswith(k[:4])]
+                problems.append("证据 %s 不存在（那一步可能失败了，没有返回值）；"
+                                "现有可引用的相近步骤：%s"
+                                % (e, "、".join(sorted(near)[:3]) or "（无）"))
 
         pool = []
         for e in ev:
