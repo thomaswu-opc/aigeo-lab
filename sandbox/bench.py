@@ -8,7 +8,17 @@ T01-3 连跑四次得到 33/24/23/24 轮、4 次里错 1 次（法向取反算�
 判定不看 agent 自己的报告，用独立算法重算：
   * T01-1 / case_C —— roomtruth.expect（墙面覆盖法找门洞、有向轴判方位）
   * T01-3 —— 门扇顶点 SVD 最小奇异向量 vs 墙面厚度轴（与 tools.angle 不同实现）
+  * T03 —— 净宽/净深由地板包围盒重算；椅子占地 0.46×0.50
+  * T04 —— 椅子占地中心由 roomtruth 给（顶点包围盒中心）
+  * T05 / T08 —— 用题面给的相对位移（(0.90,0) / (0.50,0.78) / (-0.15,-0.67)），
+    不需要知道墙在哪，只要求内部自洽
+  * T02 / T06 / T07 —— 闭式（2.5、1.0、6.0、5.4、18.75、去球冠的球体积）
   * T09 —— 答案里 16 个实体是否逐一给了角色（只核覆盖，不核每个标签对错）
+  * T10 —— 只核结构（角度在 (0,180]、有水平位移、拟合残差 ≤5mm）；期望角度要完整复算，
+    那一步在 verify_edits 里，所以这一格的强度低于其它题
+
+每题只核「该题最核心、且能独立算出的那一两个量」。完整的 90 项产物验收由
+verify_edits.py 负责 —— bench 回答的是「现场重跑还给不给这个结论」，不是「产物每一处都对」。
 
 用法：
   python bench.py                 # 全部任务，默认 3 次
@@ -127,12 +137,154 @@ def check_t09(v):
     return []
 
 
+# ---------------------------------------------------------------- 其余六题
+# 判据取向：每题只核「该题最核心、且能独立算出的那一两个量」。完整的 90 项产物验收
+# 由 verify_edits.py 负责；bench 要回答的是「现场重跑还给不给这个结论」，不是「产物每一处都对」。
+# 强度分两档：strict = 期望值闭式可算或由 roomtruth 独立重算；loose = 只能核结构/合理范围。
+
+def _f(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def check_t02(v):
+    """盒子边长 2.5、球半径 1.0 —— 题面给定参考量，闭式。"""
+    bad = []
+    for key, want in (("box_edge_m", 2.5), ("sphere_radius_m", 1.0)):
+        got = _f(v.get(key))
+        if got is None or abs(got - want) > 2e-3:
+            bad.append("%s=%s≠%s" % (key, v.get(key), want))
+    return bad
+
+
+def check_t03(v):
+    """净宽/净深由地板包围盒独立重算；椅子占地 = 0.46×0.50。"""
+    r = _rows(IFC)
+    fr = RT.frame(r)
+    w, d = fr["w"], fr["d"]
+    bad = []
+    for key, want in (("net_width_m", fr["hi"][w] - fr["lo"][w]),
+                      ("net_depth_m", fr["hi"][d] - fr["lo"][d])):
+        got = _f(v.get(key))
+        if got is None or abs(got - want) > 2e-3:
+            bad.append("%s=%s≠%.3f" % (key, v.get(key), want))
+    area = _f(v.get("chair_footprint_area_m2"))
+    if area is None or abs(area - 0.46 * 0.50) > 2e-3:
+        bad.append("chair_footprint_area_m2=%s≠0.230" % v.get("chair_footprint_area_m2"))
+    return bad
+
+
+def check_t04(v):
+    """椅子占地中心由 roomtruth 独立给（顶点包围盒中心）。"""
+    r = _rows(IFC)
+    c = r[RT.pick(r, "chair")]
+    want = (c["cx"], c["cy"])
+    got = v.get("footprint_center_world") or v.get("footprint_center_xy_m") or []
+    try:
+        dx, dy = abs(float(got[0]) - want[0]), abs(float(got[1]) - want[1])
+    except (TypeError, ValueError, IndexError):
+        return ["footprint_center 缺失"]
+    return [] if max(dx, dy) <= 0.01 else [
+        "footprint_center=(%.3f, %.3f)≠(%.3f, %.3f)" % (got[0], got[1], *want)]
+
+
+def check_t05(v):
+    """三个位置的相对位移是题面给定的：(0.90, 0) 与 (0.50, 0.78)。
+
+    用「相对原始中心的位移」而不是绝对坐标：不需要知道墙在哪，只要求三处一致。
+    """
+    base = v.get("chair_center_original_xy_m")
+    try:
+        bx, by = float(base[0]), float(base[1])
+    except (TypeError, ValueError, IndexError):
+        return ["chair_center_original_xy_m 缺失"]
+    bad = []
+    for key, want in (("p2_center_xy_m", (0.90, 0.0)), ("p3_center_xy_m", (0.50, 0.78))):
+        pt = v.get(key)
+        try:
+            dx, dy = float(pt[0]) - bx, float(pt[1]) - by
+        except (TypeError, ValueError, IndexError):
+            bad.append("%s 缺失" % key)
+            continue
+        if abs(dx - want[0]) > 3e-3 or abs(dy - want[1]) > 3e-3:
+            bad.append("%s 位移=(%.3f, %.3f)≠(%.2f, %.2f)" % (key, dx, dy, *want))
+    return bad
+
+
+def check_t06(v):
+    """扩宽到 6.0 / 5.4；窗洞 1.4×1.4 = 1.96 m²（题面给定）。"""
+    bad = []
+    for key, want in (("net_width_6_m", 6.0), ("net_width_54_m", 5.4)):
+        got = _f(v.get(key))
+        if got is None or abs(got - want) > 3e-3:
+            bad.append("%s=%s≠%s" % (key, v.get(key), want))
+    ww, wh = _f(v.get("window_width_m")), _f(v.get("window_height_m"))
+    if ww is None or wh is None or abs(ww * wh - 1.96) > 5e-3:
+        bad.append("窗洞 %s×%s≠1.4×1.4" % (v.get("window_width_m"), v.get("window_height_m")))
+    return bad
+
+
+def check_t07(v):
+    """闭式体积：长方体 2.5×2.5×3.0；球去掉 0.5 高的球冠。"""
+    import math as _m
+    v_ball = 4 * _m.pi / 3 - _m.pi * 0.5 ** 2 * (3 * 1.0 - 0.5) / 3
+    bad = []
+    got = _f(v.get("cube_volume_after_m3"))
+    if got is None or abs(got - 18.75) > 0.01 * 18.75:
+        bad.append("cube_volume_after=%s≠18.75" % v.get("cube_volume_after_m3"))
+    got = _f(v.get("ball_volume_after_m3"))
+    if got is None or abs(got - v_ball) > 0.03 * v_ball:
+        bad.append("ball_volume_after=%s≠%.4f" % (v.get("ball_volume_after_m3"), v_ball))
+    return bad
+
+
+def check_t08(v):
+    """椅子从 (0.70, 1.62) 移到 (0.55, 0.95) ⇒ 位移 (-0.15, -0.67)，题面闭式。"""
+    sh = v.get("chair_shift_m")
+    try:
+        dx, dy = abs(float(sh[0]) + 0.15), abs(float(sh[1]) + 0.67)
+    except (TypeError, ValueError, IndexError):
+        return ["chair_shift_m 缺失"]
+    return [] if max(dx, dy) <= 3e-3 else [
+        "chair_shift=(%.3f, %.3f)≠(-0.15, -0.67)" % (sh[0], sh[1])]
+
+
+def check_t10(v):
+    """对接的角度/位移要给出且自洽：角度落在 (0,180]、有水平位移、拟合残差小。
+
+    期望角度依赖三个插脚与凹槽的配对，需完整复算（verify_edits 里有）；这里只核结构合理性，
+    强度低于上面几题，如实标注。
+    """
+    bad = []
+    ang = _f(v.get("rotation_angle_deg"))
+    if ang is None or not (0 < abs(ang) <= 180.001):
+        bad.append("rotation_angle_deg=%s 不在 (0,180]" % v.get("rotation_angle_deg"))
+    dist = _f(v.get("horizontal_distance_m"))
+    if dist is None or dist <= 1e-6:
+        bad.append("horizontal_distance_m=%s 缺失或为 0" % v.get("horizontal_distance_m"))
+    res = _f(v.get("fit_residual_max_m"))
+    if res is not None and res > 5e-3:
+        bad.append("fit_residual_max_m=%.4f>5mm" % res)
+    return bad
+
+
 CASES = [
     # (编号, 名称, 卡片, 模型, 判定函数, 说明)
     ("T01_1", "位置关系（椅子 vs 门洞）", "tasks/T01_1.md", IFC, check_t01_1, "读层 . 度量"),
     ("T01_3", "门扇与墙面夹角", "tasks/T01_3.md", IFC, check_t01_3, "读层 . 夹角"),
     ("T09", "16 个实体逐一说角色", "tasks/T09.md", IFC, check_t09, "读层 . 识别"),
     ("CASE_C", "换对象（问画框）", "tasks/gen/case_picture_frame.md", IFC, check_case_c, "泛化 . 换对象"),
+    # 其余赛题：T01 已用两个小问代表，T02-T10 各一题
+    ("T02", "球与盒子：五个位置", "tasks/T02.md", IFC, check_t02, "读层 . 相交体积"),
+    ("T03", "面积与体积清单", "tasks/T03.md", IFC, check_t03, "读层 . 面积体积"),
+    ("T04", "家具占地与边距", "tasks/T04.md", IFC, check_t04, "读层 . 占地"),
+    ("T05", "椅子三种摆放", "tasks/T05.md", IFC, check_t05, "写层 . 平移"),
+    ("T06", "后墙开洞加宽", "tasks/T06.md", IFC, check_t06, "写层 . 开洞"),
+    ("T07", "长方体抬高 / 球切顶", "tasks/T07.md", IFC, check_t07, "写层 . 布尔"),
+    ("T08", "开门碰椅子", "tasks/T08.md", IFC, check_t08, "写层 . 碰撞"),
+    ("T10", "火箭对接", "tasks/T10.md", IFC, check_t10, "写层 . 对接"),
 ]
 
 
@@ -142,8 +294,8 @@ def run_one(cid, card, model, i):
     if os.path.exists(stale):
         os.remove(stale)
     cmd = [sys.executable, "run_agent.py", "--card", card, "--model", model,
-           "--llm", "auto", "--tag", tag, "--max-turns", "90",
-           "--wall-budget", "320", "--no-video"]
+           "--llm", "auto", "--tag", tag, "--max-turns", "100",
+           "--wall-budget", "420", "--no-video"]
     subprocess.run(cmd, cwd=HERE, capture_output=True, text=True)
     try:
         return tag, json.load(open(stale, encoding="utf-8"))
@@ -155,6 +307,12 @@ def summarize(rows):
     print("\n| 任务 | 类型 | n | 成功 | 轮次（min/中位/max） | tokens 中位 | 耗时中位 | 失败模式 |")
     print("|---|---|---|---|---|---|---|---|")
     for cid, name, kind, recs in rows:
+        if not recs:
+            # --report 模式下新加的任务还没有历史运行：写一行「未跑」，
+            # 比让它把整张表崩掉有用（第一次扩到 10 题时就是这里 IndexError）。
+            print("| %s %s | %s | 0 | **未跑** | — | — | — | 还没有 bench 运行 |" % (
+                cid, name, kind))
+            continue
         ok = [r for r in recs if r["ok"]]
         turns = sorted(r["turns"] for r in recs)
         toks = sorted(r["tokens"] for r in recs if r["tokens"])

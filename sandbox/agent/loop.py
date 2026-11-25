@@ -936,11 +936,32 @@ class Loop:
         # 实测 T09 交过 {"note": "见 entities / multi_part / ..."} —— 它以为前面已经写过，
         # 实际一次都没交。空答案被拒之后，这是它对审计的第二条绕路。
         _META = {"note", "notes", "说明", "comment", "remark"}
+
+        def _substantive(xs):
+            """values 里有没有真正的结论：至少一个不是 None / 空串 / 空容器。
+
+            实测 T02 交过 box_edge_m=null、sphere_radius_m=null —— 键名齐全，值全是 null。
+            审计只管「数字有没有出处」，null 不是数字，于是拦不住；它看起来像交了答案，
+            实际一个量都没给。T08 交了 chair_shift_m="未知"，同一类。
+            """
+            for x in xs.values():
+                if isinstance(x, (list, dict)):
+                    if x:
+                        return True
+                elif isinstance(x, str):
+                    if x.strip() and x.strip() not in ("未知", "无", "none", "null", "None"):
+                        return True
+                elif x is not None:
+                    return True
+            return False
         _vals = ans.get("values")
         if isinstance(_vals, dict) and _vals and set(_vals) <= _META:
             problems.append("values 里只有说明文字（%s），没有结论本身 —— 把结果写到具体键上"
                             "（键名见任务卡的「答案字段名」），note 只能作为附注"
                             % "/".join(sorted(_vals)))
+        if isinstance(_vals, dict) and _vals and not _substantive(_vals):
+            problems.append("values 里的键都在，但值全是 null / 空 / 「未知」—— 这不算交卷。"
+                            "量出来就写数（每个数要有工具出处），量不出来就把这一项写进 unknowns")
         if not isinstance(_vals, dict) or not _vals:
             problems.append("答案的 values 是空的 —— 空答案不算交卷。把结论写进 values"
                             "（键名见任务卡的「答案字段名」）；确实量不出来就调 "

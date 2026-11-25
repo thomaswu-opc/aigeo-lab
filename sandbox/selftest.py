@@ -100,6 +100,21 @@ def test_audit_pointer():
     check("审计", "短字符串答案放行", bool(loop2.answer), True)
 
 
+def test_audit_null():
+    """键都在、值全是 null —— 看起来像交了答案，实际一个量都没给。"""
+    for vals, want_reject in (({"box_edge_m": None, "r": None}, True),
+                              ({"chair_shift_m": "未知"}, True),
+                              ({"box_edge_m": 2.5}, False),
+                              ({"positions": [1, 2]}, False)):
+        loop = _bare_loop()
+        # 证据里要有这些数，否则「数字无法追溯」会把它拒掉，测不到 null 这条规则
+        loop.results["x"] = {"box_edge_m": 2.5, "positions": [1, 2], "v": 1}
+        loop.phase = "REPORT"
+        loop._audit("s9", {"values": dict(vals), "evidence": ["x"]})
+        check("审计", "null 检测 %s" % list(vals)[0],
+              loop.answer is None, want_reject)
+
+
 def test_audit_precision():
     """模型照抄的是「观察里显示的 3 位小数」，审计必须按同一精度比对。
 
@@ -130,6 +145,7 @@ if __name__ == "__main__":
     test_audit_empty()
     test_audit_precision()
     test_audit_pointer()
+    test_audit_null()
     test_scope_labels()
     print("\n%s" % ("全部通过" if FAILED == 0 else "%d 项失败" % FAILED))
     sys.exit(1 if FAILED else 0)
