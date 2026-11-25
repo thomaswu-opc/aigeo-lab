@@ -87,12 +87,14 @@ def _desc(bus, S):
       "{字段: 值} / {字段<=: 值} / {字段: {$lte: 值}} / {$and: [...]} / {$or: [...]}。",
       {"items": "list  实体清单，或引用字符串（如 @load.solids、@clu.groups[0].items）",
        "where": "dict  过滤条件；空 {} 表示全选",
-       "probe": "bool  判据体检：反例检验（每条条件能指出谁被它排除了）+ 余量检验（阈值还能挪多少而不改变结论）"},
+       "probe": "bool  判据体检：反例检验（每条条件能指出谁被它排除了）+ 余量检验（阈值还能挪多少而不改变结论）",
+       "fields": "list  只要这几个字段（如 [sid, cx, cy, cz, fill]）；"
+                 "不填则按观察预算自动裁剪。要「这几件的完整指纹」时把它写全"},
       pre="items 能被解析为场景里存在的 sid",
       degrade="无匹配时返回空列表，不报错 —— 由调用方决定下一步；"
               "若 where 里的字段在该实体上不存在，该条件判假（不会静默忽略）",
       returns="{items[完整指纹], n, where, probe?}")
-def t_select(bus, items, where=None, probe=False):
+def t_select(bus, items, where=None, probe=False, fields=None):
     """过滤，并保证输出元素携带完整指纹。
 
     关键细节：输入元素自带的量优先。principal_frame 输出的是「主轴系下的 dims」，
@@ -115,7 +117,15 @@ def t_select(bus, items, where=None, probe=False):
     rows = [d for S, d in resolved]
     where = where or {}
     keep = [d for d in rows if match(d, where)]
+    if fields:
+        # 调用方点名要哪几个字段：返回体量由它决定，观察层就不会再做 slim 投影。
+        # 「要这几件的完整指纹」在旧接口里做不到 —— 无论怎么取，观察都只给 12 个键，
+        # 模型于是反复取同一个全集（实测 T09 同参数 select 连调 9 次、被判停滞）。
+        want = {str(f) for f in fields} | {"sid"}
+        keep = [{k: d[k] for k in d if k in want} for d in keep]
     out = {"items": keep, "n": len(keep), "where": where}
+    if fields:
+        out["fields"] = list(fields)
     if probe:
         out["probe"] = _probe(rows, where, len(keep))
     return out

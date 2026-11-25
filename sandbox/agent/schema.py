@@ -315,21 +315,39 @@ def _trim(o, nd=4, in_list=False, depth=0):
 # min_thickness 必须带上：d2 是「最短边」，min_thickness 是「板厚」，两者对开着的门扇
 # 差了整整一个量级（0.41 vs 0.04）。只给 d2 时，模型分不清「薄板」和「细长条」，
 # 于是把门套横档当成门扇候选、把贯穿墙厚的洞口盒当成实心块，判据从一开始就歪了。
-_SLIM_KEYS = ("sid", "n", "d0", "d1", "d2", "sx", "sy", "sz", "min_thickness",
-              # 只留「长边落在哪根轴」这个比较结论（h_long_axis）；h_long/h_short 与
-              # max(sx,sy) 重复，压掉它们能让 20 条实体一次全列出来 —— 对「逐项列举」
-              # 类任务来说，看得全比看得细重要。
-              "h_long_axis",
-              "z_min", "axis_aligned")
+_SLIM_KEYS = ("sid", "d0", "d1", "d2",
+              # d0/d1/d2 是排序后的三边（最长/中/最短），**不带轴名**；sx/sy/sz 才是
+              # 「沿世界 x/y/z 的跨度」。两者都要：任务卡要 dims=[d0,d1,d2]，
+              # 而「这面墙沿哪根轴立着」「多厚是哪个方向」只能由 sx/sy/sz 回答。
+              # 只给 d0/d1/d2 时模型只能自己推轴向，推出来的数不在任何返回里 → 审计判编造
+              # （实测 T09 交了 8 个中心/厚度值全部无法追溯）。
+              "sx", "sy", "sz",
+              "min_thickness",
+              "h_long_axis",       # 长边落在哪根轴：比较结论，不让模型自己比大小
+              "z_min", "axis_aligned",
+              "cx", "cy", "cz",    # 中心：位置题与识别题都要拿它写答案
+              "fill")              # 填充率：判「这面墙有没有洞」的直接依据
+# 14 个键 ×20 个实体 ≈ 3.7k 字符，所以观察预算同步提到 6800（投影阈值 4216）。
+# 这一版是「压缩但不丢判断所需的信息」的刻度：字段一个不少，靠压精度（3 位小数）省体积。
+# 去掉 sx/sy/sz 与 n 换来 center/fill：轴对齐时 sx/sy/sz 就是 d0/d1/d2 的重排，
+# 而 h_long_axis 已经给出「长边在哪根轴」这个结论。20 个实体 12 键 = 3121 字符，
+# 仍在预算内（塞得下才走「一行一个实体」，否则会退回「只显示前 5 条」）。
 
 
-def _slim_rows(rows, nd=3):
+# 投影时浮点的显示精度。审计要比对它 —— 模型照抄「看见的 0.523」，
+# 而原始值是 0.523074，容差若按 1e-6 算就会稳定判它编造（实测 T09 连拒三次、AUDIT_FAILED）。
+SLIM_ND = 3
+
+
+def _slim_rows(rows, nd=None):
     """把一串实体指纹压成「一行一个实体」。只在原样塞不下时才用。
 
     数值压到 3 位小数：几何判据的分辨率是毫米，第 4 位以后只有浮点噪声
     （"1.999999" 这种）。不压的话 20 条实体总长 3554 字符，刚好越过 3224 的预算，
     于是退化成「只显示前 5 条」—— 而「逐项列举」类任务就再也凑不齐 16 个实体。
     """
+    nd = SLIM_ND if nd is None else nd
+
     def _r(v):
         if isinstance(v, bool) or not isinstance(v, float):
             return v
@@ -356,7 +374,7 @@ def observe(name, out, max_items=None, max_chars=None):
     if max_items is None:
         max_items = 400 if _OBS_FULL else 24
     if max_chars is None:
-        max_chars = 48000 if _OBS_FULL else 5200
+        max_chars = 48000 if _OBS_FULL else 6800
 
     stats = {}
     if isinstance(out, dict):
@@ -380,6 +398,11 @@ def observe(name, out, max_items=None, max_chars=None):
             # 条数少不等于塞得下：20 个实体各带法向簇与体积，JSON 能到十几 KB。
             # 只看条数会让它走「整体按字符截断」那条路，截出来的是半截 JSON，
             # 模型没法用、只能反复重取 —— 实测有一半轮次耗在这上面。
+            # 小集合原样给：按 sid 取 1~4 件时，「完整指纹」本来就是模型要的东西。
+            # 这里压它等于把「我要这一件的细节」这个明确请求变成又一次模糊返回 ——
+            # 实测 T09 反复用同样的参数取全集、指望某次能拿到完整字段，最后被判停滞。
+            if name in ("select", "pick", "describe") and total <= 4:
+                continue
             if total <= max_items and raw_sz <= max_chars * 0.62:
                 continue
             # 按「字符预算」而不是「条数」截断。按条数截断时，一条紧凑记录和一条巨大记录

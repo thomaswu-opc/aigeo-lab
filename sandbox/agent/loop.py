@@ -116,6 +116,51 @@ PHASE_GOAL = {
 }
 
 
+def _result_sids(out):
+    """从任意工具返回里取出「被指认的对象」清单（items / solids / groups[].items / item）。
+
+    用途：判断后来的某一步是不是**补齐了**某次失败当时缺的那几件东西。
+    只认里层 dict 的 sid 字段，不猜结构 —— 认不出来的返回空集，宁可不消解。
+    """
+    if not isinstance(out, dict):
+        return set()
+    got = set()
+    for key in ("items", "solids", "rows", "results"):
+        v = out.get(key)
+        if isinstance(v, list):
+            for it in v:
+                if isinstance(it, dict) and it.get("sid"):
+                    got.add(it["sid"])
+    it = out.get("item")
+    if isinstance(it, dict) and it.get("sid"):
+        got.add(it["sid"])
+    for g in (out.get("groups") or []):
+        if isinstance(g, dict):
+            for m in (g.get("items") or []):
+                if isinstance(m, dict) and m.get("sid"):
+                    got.add(m["sid"])
+    return got
+
+
+def _resolve_reason(f, name, want, n, cur_sids, phase):
+    """这一步能否消解失败 f。返回 same_tool / superset / recover_move_on / None。
+
+    抽成纯函数是为了能单测：这四条判据的松紧直接决定「会不会把无关步骤当成补齐」。
+    """
+    if f.get("resolved"):
+        return None
+    if f.get("tool") in (None, name) and want is not None and n == want:
+        return "same_tool"
+    if (f.get("want") is not None and n == f["want"]
+            and set(f.get("sids") or ()) <= set(cur_sids)):
+        # 换路径补齐：条数到位，且原来已经找到的那几件仍在结果里。
+        # 只比条数会把「碰巧也是 3 个」的无关步骤当成消解。
+        return "superset"
+    if phase == "RECOVER" and want is None:
+        return "recover_move_on"
+    return None
+
+
 class AuditError(Exception):
     pass
 
@@ -575,24 +620,29 @@ class Loop:
         # 但那条 count_mismatch 仍挂着未消解 → advance_phase 被门控拒 → 被迫进 RECOVER
         # 再绕一圈 → 70 轮耗尽。同一个工具、同一个期望数，补对了就是补对了，
         # 与它当时站在哪个阶段无关。
-        if self.failures and not self.failures[-1].get("resolved"):
-            f = self.failures[-1]
-            same_tool = f.get("tool") in (None, name)
-            fixed_here = same_tool and want is not None and n == want
-            out_of_recover = self.phase == "RECOVER" and want is None
-            if fixed_here or out_of_recover:
+        cur_sids = _result_sids(out)
+        for f in self.failures:
+            if f.get("resolved"):
+                continue
+            how = _resolve_reason(f, name, want, n, cur_sids, self.phase)
+            if how:
                 f["resolved"] = True
                 f["resolved_by"] = sid
+                f["how"] = how
                 self.L.append("failure_resolved", {"step": f["step"], "by": sid,
-                                                   "tool": name, "phase": self.phase})
+                                                   "tool": name, "phase": self.phase,
+                                                   "how": how})
 
         if want is None or n == want:
             self._tick_recover()
 
         if want is not None and n != want:
             self.failures.append({"step": sid, "kind": "count_mismatch", "tool": name,
-                                  "want": want, "got": n, "args": _short(args, 300),
-                                  "resolved": False})
+                                  "want": want, "got": n,
+                                  # 记下当时找到了哪几件：后来者要「包含这些」才算补齐，
+                                  # 只比条数会被一次无关的 n=3 骗过去。
+                                  "sids": sorted(cur_sids),
+                                  "args": _short(args, 300), "resolved": False})
             self._enter_recover(sid, "count_mismatch",
                                 "期望 %s 个候选，实得 %s。参数：%s" % (want, n, _short(args, 200)))
 
@@ -689,7 +739,8 @@ class Loop:
                 "IDENTIFY": "要么把题目点名的角色各压到唯一命中（至少 1 个），"
                             "要么用一次 select/pick 把全集确认下来（条数 = 实体总数）",
                 "MEASURE": "至少完成一次测量（MEASURE 阶段的白名单工具）",
-                "VERIFY": "没有未消解的失败",
+                "VERIFY": "没有未消解的失败（补齐原失败缺的条目就算消解：条数要到位，"
+                          "且原来那几件仍在结果里 —— 换一条路径证明同一件事同样算数）",
                 "EDIT": "改了几何就必须 emit 落盘；没改几何可以空过",
                 "REVALIDATE": "必须读回自己刚写出的那个文件再量",
             }.get(self.phase, "阶段目标未达成")
@@ -837,8 +888,17 @@ class Loop:
             #   b) 观察精度：观察里的浮点被压到 4 位小数，模型照抄就是 4.1846。
             #      若只认 a)，模型「看得见的数」和「交得上的数」永远不一致 ——
             #      审计会稳定地判它编造，而它其实一字未改地抄了证据。实测踩过。
+            #   b) 观察精度：观察层把浮点压到 sch.SLIM_ND 位（3 位），模型照抄就是 0.523。
+            #      两边都按这个精度取整再比 —— 之前这里写死 4 位，而投影是 3 位，
+            #      于是「copied 值」永远对不上，T09 连拒三次判 AUDIT_FAILED。
+            # 观察有两条精度通道：批量投影是 3 位（SLIM_ND），单件直通是原值。
+            # 模型会在两者之间混用 —— 同一个 0.814508… 它可能写 0.815（抄投影）
+            # 或 0.8145（抄单件的原值再四舍五入）。两条都要认，否则同一个数
+            # 会被拒到第三次（实测 T09 每次都因 0.8145 被拒 1~2 轮）。
             hit = any(abs(c - p) <= max(1e-9, 1e-6 * max(1.0, abs(c)))
-                      or abs(round(p, 4) - c) <= 1e-9 for p in pool)
+                      or abs(round(p, sch.SLIM_ND) - round(c, sch.SLIM_ND)) <= 1e-9
+                      or abs(round(p, 4) - c) <= 1e-9
+                      for p in pool)
             if not hit:
                 ungrounded.append(c)
         if ungrounded:
@@ -867,6 +927,24 @@ class Loop:
             if not any(e in self.assembly_steps for e in ev):
                 problems.append("给了语义标签却没引用算族的那个步骤（%s）—— 标签的证据是族的 facts，"
                                 "把族那一步写进 evidence" % (self.assembly_steps[-1] if self.assembly_steps else "assembly"))
+
+        # 空答案不算交卷。审计原来只管「数字有没有出处」，于是「什么都不写」天然通过 ——
+        # 实测 T09 有一次 54 轮后交了 {"values": {}}，状态还是 OK。这不是证据不足，是没干活：
+        # 真的量不出来应该走 declare_insufficient（终态 INSUFFICIENT_EVIDENCE），
+        # 而不是用空 dict 换一个绿色的 OK。走统一出口，三次都空就判 AUDIT_FAILED。
+        # values 里只有 note/notes 这类自述字段，等于交了一个「指针」而不是结论。
+        # 实测 T09 交过 {"note": "见 entities / multi_part / ..."} —— 它以为前面已经写过，
+        # 实际一次都没交。空答案被拒之后，这是它对审计的第二条绕路。
+        _META = {"note", "notes", "说明", "comment", "remark"}
+        _vals = ans.get("values")
+        if isinstance(_vals, dict) and _vals and set(_vals) <= _META:
+            problems.append("values 里只有说明文字（%s），没有结论本身 —— 把结果写到具体键上"
+                            "（键名见任务卡的「答案字段名」），note 只能作为附注"
+                            % "/".join(sorted(_vals)))
+        if not isinstance(_vals, dict) or not _vals:
+            problems.append("答案的 values 是空的 —— 空答案不算交卷。把结论写进 values"
+                            "（键名见任务卡的「答案字段名」）；确实量不出来就调 "
+                            "declare_insufficient 说明缺什么，那是一个诚实的终态")
 
         problems = list(dict.fromkeys(problems))[:8]
 
