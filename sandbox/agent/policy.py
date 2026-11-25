@@ -61,7 +61,8 @@ SYSTEM = """你是一个几何求解智能体的决策部分。你不做算术�
 
 工作节奏：
 - SURVEY 只做 load 和 clusters，先弄清场景由几部分组成。
-- IDENTIFY 用 select 把每个角色压到唯一命中。
+- IDENTIFY 用 select 把每个角色压到唯一命中。**但只认题目点名的对象和它们的参照物** ——
+  没被问到的构件不要逐个识别。每多认一个角色就多几轮、多一条要复核的证据，而它不在答案里。
 - 只要题里出现门窗、洞口、「墙上挂着的东西」，IDENTIFY 的第一件事是
   `assembly(walls=[...能查出洞口的板...])` —— 它一次给出「谁属于哪个洞口」和
   每族的 grounded / 下框 / 扇 / 语义范围。**先拿族，再在族内认角色**；
@@ -296,7 +297,7 @@ class LLMPolicy(Policy):
         # 实测 T01 第 1 问已经把两个距离量出来、还复核了三遍，仍在 VERIFY 里换路径继续核对，
         # 60 轮耗尽而从未提交。复核的价值在「换路径」，不在「遍数」。
         nph = sum(1 for s in steps if s.get("phase") == ctx["phase"])
-        if ctx["phase"] == "VERIFY" and nph >= 2:
+        if ctx["phase"] == "VERIFY" and nph >= 1:
             body.append("提示：本阶段已有 %d 步。一条测量 + 一条复核就够了，第三条路径不会改变结论。"
                         "现在唯一有意义的动作是 advance_phase 进 REPORT 把数交上去；"
                         "重复同一个调用会被判停滞并终止本次运行。" % nph)

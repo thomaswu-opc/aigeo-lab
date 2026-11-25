@@ -157,6 +157,8 @@ class Loop:
         self._sig_out = {}          # 缓存对应的原始返回，用来把新步骤登记进 results
         self._sig_first = {}        # 同一签名的第一次步骤 id：重复时直接告诉它去引用那一步
         self._sig_err = {}          # 同一签名失败时的报错原文：失败调用没有返回可缓存，但要能重放提示
+        self._last_select = None    # 上一步 select 的命中集合（判断"换条件有没有换来新信息"）
+        self._loaded = {}           # 已读过哪些模型文件（重复 load 不重算，也不清去重计数）
         # 「这一步到底带回了新数字吗」—— 换参数而不换判据的打转，签名完全相同那条抓不到。
         # 实测 T01 第 1 问在旋转副本上就是这样耗掉 60 轮的：op_w1b / op_final / op_final2 /
         # op_o005 换着名字反复查同一面墙，每次的参数都不一样，返回的数一字不差。
@@ -433,6 +435,43 @@ class Loop:
                             step["hint"] = ("这次唯一命中里有 %d/%d 条判据指不出反例 —— "
                                             "它们不构成独立证据；要更稳就用 select(probe=true) 看明细"
                                             % (ev["n_cond"] - ev["n_witnessed"], ev["n_cond"]))
+        # 轮次的两个大头都在这里：
+        #  ① select 换条件反复试 —— 命中集合根本没变，说明判据没换，只是措辞换了；
+        #  ② 重复 load —— load 会清空去重计数，所以"再读一遍"永远不会被判成重复调用。
+        if name == "select" and isinstance(out, dict):
+            hit = frozenset(i.get("sid") for i in (out.get("items") or [])
+                            if isinstance(i, dict))
+            if self._last_select is not None and hit == self._last_select:
+                self._spin += 1
+                msg = ("命中集合与上一步完全相同（%d 个），换条件没带来新信息 —— "
+                       "要么换一条正交判据，要么推进阶段。" % len(hit))
+                if isinstance(obs, str) and obs.rstrip().endswith("}"):
+                    step["obs"] = obs.rstrip()[:-1] + ',"_same_hits":%s}' % json.dumps(
+                        msg, ensure_ascii=False)
+                step["hint"] = "命中集合没变（%d 个）" % len(hit)
+                self._maybe_force(sid, step, "select 命中集合连续不变")
+            else:
+                self._spin = 0
+            self._last_select = hit
+            if len(hit) == 1:
+                step["hint"] = ("已唯一命中 %s —— 别再筛同类条件，接着量或直接推进"
+                                % next(iter(hit)))
+        if name == "load" and isinstance(out, dict):
+            p_ = (out.get("meta") or {}).get("path")
+            n_seen = self._loaded.get(p_, 0)
+            if n_seen >= 1:
+                # 同一路径重复读：不重算、不清去重计数，直接把"没变化"讲明白
+                msg = ("这个文件已经读过 %d 次，场景没有变化 —— 不要重复 load；"
+                       "要继续就用已返回的 sid（@第一步.solids）。" % (n_seen + 1))
+                if isinstance(obs, str) and obs.rstrip().endswith("}"):
+                    step["obs"] = obs.rstrip()[:-1] + ',"_reload":%s}' % json.dumps(
+                        msg, ensure_ascii=False)
+                step["hint"] = "重复读入同一文件"
+                self._spin += 1
+            else:
+                self._loaded[p_] = 0
+            self._loaded[p_] = n_seen + 1
+
         if name in ("distance", "rank", "section", "mesh_health",
                     "footprint", "clearance", "opening_edge",
                     # 运动层与形状层的产物同样是「可复核的量」：扫掠角度、接触/重叠判定、

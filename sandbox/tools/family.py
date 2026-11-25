@@ -27,6 +27,27 @@ from tools import geom
 import tools.ops  # noqa: F401  确保 openings 已注册
 
 
+def _as_sids(xs):
+    """接受 sid 字符串、dict（select/describe 的返回值）、或引用解析后的混合列表。
+
+    实测：模型会把 select 的整份指纹列表直接当 walls 传进来，于是 `sorted(walls)`
+    在 dict 之间比大小，抛 TypeError，一步失败 → 它再试三遍 → 四轮白烧。
+    这里统一成 sid：不猜内容，只取 sid 字段。
+    """
+    if xs is None:
+        return []
+    if isinstance(xs, str):
+        xs = [xs]
+    out = []
+    for x in xs:
+        if isinstance(x, dict):
+            if "sid" in x:
+                out.append(x["sid"])
+        elif x is not None:
+            out.append(str(x))
+    return out
+
+
 def _solid(bus, sid):
     for S in bus.scene:
         if S.sid == sid:
@@ -316,12 +337,8 @@ def t_assembly(bus, walls, items=None, tol_rel=0.02, link_mm=15.0, vol_ratio=1.0
     `items` 只影响 loose 清单，不影响族（族由洞口和接触决定）。实测模型会拿不同的
     items 子集反复调同一个族查询（一次运行 10 次），每次重算一遍接触图纯属浪费。
     """
-    if isinstance(walls, str):
-        walls = [walls]
-    if items is None:
-        items = [S.sid for S in bus.scene]
-    if isinstance(items, str):
-        items = [items]
+    walls = _as_sids(walls)
+    items = ([S.sid for S in bus.scene] if items is None else _as_sids(items))
     memo = getattr(bus, "_famemo", None)
     if memo is None:
         memo = bus._famemo = {}
