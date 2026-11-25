@@ -509,6 +509,11 @@ def main():
     else:
         card_text = open(a.card, encoding="utf-8").read()
         card_rel = os.path.relpath(a.card, HERE)
+        # 卡里写的是 `$MODEL` 占位符（记录与模型解耦，一稿多跑）；到这里必须换成真实路径。
+        # 不换的话只能靠模型猜：实测纯净版把 `AI-Geometry-Models` 猜成 `AI_Geometry-Models`
+        # （连字符写成下划线），load 连错 7 次、8 轮就判「模型文件无法读入」放弃。
+        if "$MODEL" in card_text:
+            card_text = card_text.replace("$MODEL", a.model)
     ledger = Ledger(os.path.join(outdir, "events.jsonl"))
     policy = load_policy(a)
     if brief:

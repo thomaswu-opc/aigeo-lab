@@ -270,6 +270,63 @@ def check_t10(v):
     return bad
 
 
+# ---------------------------------------------------------------- 原题纯净版判据
+# 纯净版卡去掉了「答案字段名」，键名不再固定 —— 严格判据（按键取值）会全线判「缺失」，
+# 那样测出来的是"它不会按我们的格式写"，不是"它算没算对"。
+# 所以纯净版改用**宽松判据**：只看期望值有没有出现在答案里（任意键、任意层级）。
+# 代价：理论上可能"巧合出现"（比如答案里随手写了 4.0）。为此优先选特征值
+# （19.2、15.625、4.1888、3.5309），少用 4.8/4.0 这种到处都是的数。
+
+def _blob_numbers(v):
+    return [float(x) for x in re.findall(r"-?\d+\.?\d+", json.dumps(v, ensure_ascii=False))]
+
+
+def _loose(v, wants):
+    nums = _blob_numbers(v)
+    bad = []
+    for name, want, tol in wants:
+        if not any(abs(x - want) <= tol for x in nums):
+            bad.append("%s 未出现（期望 %g）" % (name, want))
+    return bad
+
+
+def loose_wants(cid):
+    """纯净版每题要出现的特征值。期望值仍由独立算法给，不是抄答案。"""
+    if cid == "T01_1":
+        t = truth_t01_1()
+        return [("净宽距离", t["distance_width_m"], 0.01),
+                ("净深距离", t["distance_depth_m"], 0.01)]
+    if cid == "T01_3":
+        return [("夹角", truth_t01_3()["angle_deg"], 0.5)]
+    if cid == "CASE_C":
+        t = truth_case_c()
+        return [("净宽距离", t["distance_width_m"], 0.03),
+                ("净深距离", t["distance_depth_m"], 0.03)]
+    if cid == "T02":
+        return [("盒边长", 2.5, 0.01), ("球半径", 1.0, 0.01)]
+    if cid == "T03":
+        # 地板顶面面积 19.2 / 椅子占地 0.23 / 正方体体积 15.625 / 理想球体积 4.1888
+        return [("地板面积", 19.2, 0.05), ("椅子占地", 0.23, 0.006),
+                ("正方体体积", 15.625, 0.02), ("球体积", 4.1888, 0.02)]
+    if cid == "T04":
+        r = _rows(IFC)
+        c = r[RT.pick(r, "chair")]
+        return [("占地中心 x", c["cx"], 0.02), ("占地中心 y", c["cy"], 0.02)]
+    if cid == "T05":
+        # 三个摆放各自的「占地边缘到门洞底边」距离：0.47 / 1.37 / 1.1962
+        return [("位置1 距门", 0.47, 0.01), ("位置2 距门", 1.37, 0.01),
+                ("位置3 距门", 1.196, 0.01)]
+    if cid == "T06":
+        return [("加宽后净宽", 6.0, 0.01), ("5.4 净宽", 5.4, 0.01), ("窗洞面积", 1.96, 0.01)]
+    if cid == "T07":
+        return [("长方体体积", 18.75, 0.02), ("球冠体积", 3.5309, 0.02)]
+    if cid == "T08":
+        return [("位移 x", -0.15, 0.01), ("位移 y", -0.67, 0.01)]
+    if cid == "T10":
+        return [("旋转角", 40.0, 0.5)]
+    return []
+
+
 CASES = [
     # (编号, 名称, 卡片, 模型, 判定函数, 说明)
     ("T01_1", "位置关系（椅子 vs 门洞）", "tasks/T01_1.md", IFC, check_t01_1, "读层 . 度量"),
@@ -288,8 +345,8 @@ CASES = [
 ]
 
 
-def run_one(cid, card, model, i):
-    tag = "bench_%s_%d" % (cid, i)
+def run_one(cid, card, model, i, tag=None):
+    tag = tag or ("bench_%s_%d" % (cid, i))
     stale = os.path.join(HERE, "runs", tag, "result.json")
     if os.path.exists(stale):
         os.remove(stale)
@@ -338,21 +395,34 @@ def main():
     if "--only" in args:
         only = [x.upper() for x in args[args.index("--only") + 1:] if x]
     report_only = "--report" in args
+    raw = "--raw" in args          # 用 tasks/raw/ 的纯净版卡 + 宽松判据
 
     rows = []
     for cid, name, card, model, checker, kind in CASES:
         if only and cid not in only:
             continue
+        if raw:
+            card = card.replace("tasks/", "tasks/raw/", 1)
+            if not os.path.exists(os.path.join(HERE, card)):
+                # 自造用例（如 CASE_C）没有纯净版：它不是赛题，不参与「原题 vs 增强」的对照
+                print("跳过 %s：没有纯净版卡" % cid)
+                continue
+            if cid == "T09":
+                checker = check_t09          # 纯净版也只需核 16 个实体都说到
+            elif loose_wants(cid):
+                _w = loose_wants(cid)
+                checker = (lambda v, w=_w: _loose(v, w))
+            kind = kind + " · 纯净版"
         recs = []
         for i in range(1, reps + 1):
-            tag = "bench_%s_%d" % (cid, i)
+            tag = ("raw_%s_%d" if raw else "bench_%s_%d") % (cid, i)
             path = os.path.join(HERE, "runs", tag, "result.json")
             if report_only:
                 if not os.path.exists(path):
                     continue
                 res = json.load(open(path, encoding="utf-8"))
             else:
-                tag, res = run_one(cid, card, model, i)
+                tag, res = run_one(cid, card, model, i, tag)
                 if res is None:
                     recs.append({"ok": False, "why": "无产物", "turns": 0, "tokens": 0, "sec": 0})
                     continue
