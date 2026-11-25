@@ -131,6 +131,11 @@ CONTROL = [
 # 页面、README、评审看到的是原文，模型看到的是能做出正确选择的最小信息。
 # 想对照原文：WB_SCHEMA=full 启动即可回到精简前的渲染。
 _TERSE = os.environ.get("WB_SCHEMA", "terse").lower() != "full"
+
+# 观察压缩的总开关。WB_OBS=full 时基本不压（预算放大 9 倍、一条不截、不投影），
+# 用来在没有 git 回退的前提下做「压缩前/后」对照 —— 压缩逻辑和修复逻辑是两件事，
+# 想判断「质量不稳是不是压缩害的」，只需要把这一层关掉，不该把轮次修复、审计改进一起退掉。
+_OBS_FULL = os.environ.get("WB_OBS", "").lower() == "full"
 _DEFAULT_RE = re.compile(r"[（(]默认[^）)]*[）)]")
 
 
@@ -340,12 +345,19 @@ def _slim_rows(rows, nd=3):
     return out
 
 
-def observe(name, out, max_items=24, max_chars=5200):
+def observe(name, out, max_items=None, max_chars=None):
     """把工具输出压成观察。返回 (text, stats)。
 
     stats 里的 n / n_items 是编排层做「唯一性判定」的依据 —— 注意是编排层判定，
     不是 LLM 判定：LLM 只看到数字，改不动它。
+
+    默认预算是「够 20 个实体一行一个」；WB_OBS=full 时预算放大到基本不触发压缩。
     """
+    if max_items is None:
+        max_items = 400 if _OBS_FULL else 24
+    if max_chars is None:
+        max_chars = 48000 if _OBS_FULL else 5200
+
     stats = {}
     if isinstance(out, dict):
         for key in ("n", "n_groups", "n_segments", "n_faces", "n_regions"):
@@ -385,7 +397,7 @@ def observe(name, out, max_items=24, max_chars=5200):
                 # 截断之前先试一次「投影」：20 个实体的完整指纹塞不下，但一行一个实体的
                 # 三边 + 落地标高塞得下。模型要的是全貌时，给全貌；要某一件的细节时，
                 # 让它按 sid 单独取 —— 比让它反复重读同一个被截断的清单好。
-                slim = _slim_rows(t[key])
+                slim = _slim_rows(t[key]) if not _OBS_FULL else t[key]
                 ssz = sum(len(json.dumps(it, ensure_ascii=False, separators=(",", ":")))
                           for it in slim)
                 if ssz <= max_chars * 0.62:

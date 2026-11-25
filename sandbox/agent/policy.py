@@ -244,12 +244,16 @@ class LLMPolicy(Policy):
     kind = "llm"
 
     def __init__(self, model, base_url=None, api_key=None, temperature=0.0,
-                 timeout=90, keep_full=4, max_retry=3):
+                 timeout=90, keep_full=None, max_retry=3):
         self.model = model
         self.provider = _provider(model)
         self.base, self.key = _endpoint(self.provider, base_url, api_key)
         self.temperature = temperature
         self.timeout = timeout
+        # WB_OBS=full 时历史里多留几步完整观察：压缩不只是"当前这步少给字段"，
+        # 还包括"前 4 步之后只剩一句话摘要"。对照实验要把这两处一起还原。
+        if keep_full is None:
+            keep_full = 12 if os.environ.get("WB_OBS", "").lower() == "full" else 4
         self.keep_full = keep_full
         self.max_retry = max_retry
         self.calls = []

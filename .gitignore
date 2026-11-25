@@ -16,7 +16,10 @@ models.zip
 
 # ---------------- 运行产物：可复现，不入库 ----------------
 # 每次运行都会重写：账本、报告、帧、视频、矩阵
-sandbox/runs/
+# 但**汇总表**要入库：cases.md / bench.md 是「哪次跑出什么」的唯一证据，
+# 它们只有几 KB，丢了就没法追溯某个结论是跑哪几次得来的。
+sandbox/runs/*
+!sandbox/runs/*.md
 sandbox/variants/
 sandbox/**/frames/
 *.mp4
