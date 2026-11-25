@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>几何实验场 · 从一句话到可审计的答案</title>
+<style>
+  :root{
+    --ink:#14181d; --ink2:#3d474f; --dim:#7d8890; --line:#e2e6ea; --line2:#eef1f4;
+    --bg:#f5f6f8; --card:#fff; --soft:#fbfcfd;
+    --survey:#2f7fb5; --identify:#7d5bb5; --measure:#b8791a; --verify:#2f9163;
+    --edit:#c25a2e; --reval:#1c8a8a; --recover:#c0413a; --report:#5a6672;
+    --ok:#2f9163; --warn:#b8791a; --bad:#c0413a;
+    --mono:"JetBrains Mono","Cascadia Code",Consolas,"Courier New",monospace;
+    --shadow:0 1px 2px rgba(20,30,40,.05),0 8px 24px rgba(20,30,40,.04);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0}
+  body{font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+       color:var(--ink);background:var(--bg);overflow:hidden}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background-image:repeating-linear-gradient(0deg,rgba(20,30,40,.02) 0 1px,transparent 1px 26px),
+                     repeating-linear-gradient(90deg,rgba(20,30,40,.02) 0 1px,transparent 1px 26px)}
+  #app{position:relative;z-index:1;height:100%;display:flex;flex-direction:column}
+  a{color:inherit;text-decoration:none}
+  code,.mono{font-family:var(--mono)}
+  button{font-family:inherit}
+
+  /* ---------------- 顶栏 ---------------- */
+  header{flex:0 0 56px;height:56px;background:#fff;border-bottom:1px solid var(--line);
+         display:flex;align-items:center;gap:20px;padding:0 18px}
+  .brand{display:flex;align-items:baseline;gap:8px;font-weight:700;letter-spacing:.2px;font-size:15px}
+  .brand small{font-weight:500;font-size:10px;letter-spacing:1.6px;color:var(--dim)}
+  .brand .m{font:10px var(--mono);color:#fff;background:var(--ink);padding:3px 6px;border-radius:4px;letter-spacing:1px}
+  nav{display:flex;gap:4px}
+  nav a{font-size:13px;color:var(--ink2);padding:7px 12px;border-radius:7px}
+  nav a:hover{background:var(--line2)}
+  nav a.on{background:var(--ink);color:#fff}
+  .spacer{flex:1}
+  .hstat{display:flex;gap:8px;align-items:center;font:11px var(--mono);color:var(--dim)}
+  .hstat b{color:var(--ink2)}
+  .pill{font:600 11px/1 var(--mono);padding:6px 9px;border-radius:5px;letter-spacing:.3px}
+  .pill.RUNNING{background:#eef4f8;color:#255f85;border:1px solid #cfe0ec}
+  .pill.OK{background:#eaf6ef;color:#1d6a47;border:1px solid #bfe3ce}
+  .pill.GATE_BLOCKED,.pill.TIMEOUT{background:#fdf4e3;color:#8a5a10;border:1px solid #efd9ac}
+  .pill.AUDIT_FAILED{background:#fdecea;color:#9d2b23;border:1px solid #f2c9c4}
+  .pill.STALLED,.pill.BUDGET_EXHAUSTED{background:#f2edfa;color:#5a3d86;border:1px solid #d9cdef}
+  .pill.INSUFFICIENT_EVIDENCE{background:#e9f5f8;color:#1c6273;border:1px solid #c5e3ea}
+  .pill.ARCHIVE{background:#eef1f4;color:#4c5a66;border:1px solid #dbe1e6}
+  .btn{background:#fff;color:var(--ink2);border:1px solid #d5dce2;border-radius:7px;
+       padding:7px 11px;font-size:12.5px;cursor:pointer;line-height:1}
+  .btn:hover{border-color:#b9c4cd;background:#fafbfc}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn.dark{background:var(--ink);border-color:var(--ink);color:#fff}
+  .btn.dark:hover{background:#222a31}
+  .btn.go{background:var(--survey);border-color:var(--survey);color:#fff}
+  .btn.go:hover{background:#28709f}
+  .btn.go[data-off]{background:#fff;border:1px dashed #d9a94a;color:#8a5a10}
+  .btn.go[data-off]:hover{background:#fdf7ec}
+  .btn.ghost{background:transparent}
+
+  /* ---------------- 主页 ---------------- */
+  main{flex:1;min-height:0}
+  main.home{overflow:auto}
+  .wrap{max-width:1120px;margin:0 auto;padding:34px 28px 80px}
+  .hero{border:1px solid var(--line);background:#fff;border-radius:14px;padding:30px 32px 24px;
+        box-shadow:var(--shadow);position:relative;overflow:hidden}
+  .hero::after{content:"";position:absolute;right:-60px;top:-60px;width:260px;height:260px;border-radius:50%;
+        background:radial-gradient(circle at 30% 30%,#eaf2f8,transparent 70%)}
+  .kicker{font:11px var(--mono);letter-spacing:2px;color:var(--survey)}
+  h1{font-size:30px;line-height:1.25;margin:10px 0 8px;letter-spacing:-.3px}
+  .hero p{margin:0;color:var(--ink2);max-width:760px;font-size:14.5px}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:22px}
+  .stat{background:var(--soft);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .stat b{display:block;font:650 24px/1.1 var(--mono);letter-spacing:-.5px}
+  .stat span{font-size:11.5px;color:var(--dim)}
+  h2{font-size:17px;margin:34px 0 12px;display:flex;align-items:center;gap:9px}
+  h2 em{font:10px var(--mono);font-style:normal;letter-spacing:1.4px;color:var(--dim);
+        border:1px solid var(--line);border-radius:4px;padding:3px 6px;background:#fff}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:11px;padding:15px 17px}
+  .card h3{margin:0 0 6px;font-size:13.5px}
+  .card p{margin:0;font-size:12.8px;color:var(--ink2)}
+  .card .mini{font:11px var(--mono);color:var(--dim);margin-top:8px}
+  .phases{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-top:6px}
+  .phase{background:#fff;border:1px solid var(--line);border-top:3px solid var(--line);border-radius:9px;
+         padding:10px 10px 13px;min-height:116px}
+  .phase b{display:block;font:600 11.5px var(--mono);letter-spacing:.6px}
+  .phase span{display:block;font-size:10.8px;color:var(--dim);margin-top:5px;line-height:1.5}
+  .phase i{font-style:normal;font-size:10px;color:#9aa4ac;font-family:var(--mono)}
+  .layers{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
+  .layer{background:#fff;border:1px solid var(--line);border-radius:11px;padding:14px 16px}
+  .layer b{font-size:12.5px} .layer p{font-size:12px;color:var(--ink2);margin:6px 0 0}
+  .layer code{font-size:11px;background:var(--soft);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  table.task{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:11px;overflow:hidden}
+  table.task th{text-align:left;font:11px var(--mono);color:var(--dim);letter-spacing:.6px;
+                background:var(--soft);border-bottom:1px solid var(--line);padding:9px 12px}
+  table.task{table-layout:fixed}
+table.task td{padding:9px 12px;border-bottom:1px solid var(--line2);font-size:12.8px;vertical-align:middle}
+  table.task tr:last-child td{border-bottom:none}
+  .dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:6px}
+  .dot.OK{background:var(--ok)} .dot.PART{background:var(--warn)}
+  .tgroup{margin-bottom:16px}
+  .tghead{display:flex;align-items:baseline;gap:10px;margin:0 0 8px}
+  .tghead b{font-size:13px} .tghead span{font-size:11.5px;color:var(--dim)}
+  .tools{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+  .tool{background:#fff;border:1px solid var(--line);border-radius:9px;padding:10px 12px;cursor:pointer}
+  .tool:hover{border-color:#c3ced7;box-shadow:var(--shadow)}
+  .tool .tn{font:600 12.5px var(--mono);display:flex;align-items:center;gap:7px}
+  .tool .tn i{font-style:normal;width:6px;height:6px;border-radius:50%;background:#cfd7de;flex:0 0 6px}
+  .tool .td{font-size:11.8px;color:var(--ink2);margin-top:5px;line-height:1.5}
+  .tool .tm{font:10px var(--mono);color:var(--dim);margin-top:6px;display:flex;gap:5px;flex-wrap:wrap}
+  .tool .tm span{border:1px solid var(--line);border-radius:3px;padding:1px 4px;background:var(--soft)}
+  .tool .more2{display:none;margin-top:7px;border-top:1px dashed var(--line);padding-top:7px;
+               font:11px/1.55 var(--mono);color:#4c5a66;white-space:pre-wrap;word-break:break-word}
+  .tool.open .more2{display:block}
+  .cta{display:flex;align-items:center;gap:14px;margin-top:30px;background:var(--ink);color:#fff;
+       border-radius:12px;padding:18px 22px}
+  .cta b{font-size:14px} .cta p{margin:3px 0 0;font-size:12.5px;color:#aab6c1}
+  .cta .btn{background:#fff;border-color:#fff;color:var(--ink)}
+  .foot{margin-top:26px;font:11px var(--mono);color:var(--dim);line-height:1.9}
+  @media (max-width:960px){
+    .stats,.grid2,.layers{grid-template-columns:1fr 1fr}
+    .phases{grid-template-columns:repeat(4,1fr)}
+    .tools{grid-template-columns:1fr 1fr}
+  }
+
+  /* ---------------- 实验场：三栏 ---------------- */
+  .lab{height:100%;display:grid;grid-template-columns:250px minmax(0,1fr) 404px;min-height:0;background:var(--bg)}
+  .lab>aside,.lab>section{min-height:0;overflow:hidden}
+  /* 左：工具映射 */
+  #rail{border-right:1px solid var(--line);background:#fbfcfd;display:flex;flex-direction:column}
+  .railhd{padding:11px 12px 9px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+  .railhd b{font-size:12.5px} .railhd span{font:10px var(--mono);color:var(--dim);margin-left:auto}
+  .railbody{flex:1;overflow:auto;padding:6px 7px 20px}
+  .rgroup{font:10px var(--mono);letter-spacing:1.1px;color:var(--dim);padding:9px 7px 4px;display:flex;gap:6px}
+  .rgroup b{font-weight:400;margin-left:auto;color:#aeb7be}
+  .trow{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:6px;cursor:pointer;
+        border:1px solid transparent;position:relative}
+  .trow:hover{background:#eef2f5}
+  .trow .nm{font:11.5px var(--mono);color:var(--ink2);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .trow .ct{font:9.5px var(--mono);color:#a9b3bb;min-width:14px;text-align:right}
+  .trow .sd{width:5px;height:5px;border-radius:50%;background:#d3dbe2;flex:0 0 5px}
+  .trow.hot{background:#eaf3fa;border-color:#bcd9ec}
+  .trow.hot .nm{color:#1c5c85;font-weight:600}
+  .trow.hot .sd{background:var(--survey);box-shadow:0 0 0 3px rgba(47,127,181,.18)}
+  .trow.sel{background:#fff;border-color:#c9d5df;box-shadow:0 1px 2px rgba(20,30,40,.06)}
+  .trow.sel .nm{font-weight:600;color:var(--ink)}
+  .trow.pending .nm{color:var(--dim)}
+  .trow.flash{animation:flash .9s ease-out}
+  @keyframes flash{0%{background:#d8ecf9}100%{background:#eaf3fa}}
+  .railtools{font:10px var(--mono);color:var(--dim);padding:7px 10px;border-top:1px solid var(--line);
+             display:flex;gap:8px;align-items:center;background:#fff}
+  .railtools button{font-size:10.5px;padding:4px 7px}
+
+  /* 中：对话 */
+  .mid{display:flex;flex-direction:column;background:var(--bg);border-right:1px solid var(--line);min-width:0;min-height:0}
+  #composer{border-bottom:1px solid var(--line);background:#fff;padding:12px 14px 11px;flex:0 0 auto}
+  .ctop{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .ctop b{font-size:12.5px} .ctop .hint{font-size:11px;color:var(--dim)}
+  .ctop .spacer{flex:1}
+  #q{width:100%;min-height:64px;max-height:180px;resize:vertical;border:1px solid #d8dfe5;border-radius:8px;
+     padding:9px 11px;font:12.5px/1.6 var(--mono);color:var(--ink);background:#fcfdfe;outline:none}
+  #q:focus{border-color:#9dc2d8;box-shadow:0 0 0 3px rgba(47,127,181,.10)}
+  .crow{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+  select,.filelab{font-size:12px;border:1px solid #d8dfe5;border-radius:7px;padding:6px 8px;background:#fff;color:var(--ink2)}
+  .filelab{cursor:pointer}
+  .seg{display:flex;border:1px solid #d8dfe5;border-radius:7px;overflow:hidden}
+  .seg button{border:none;background:#fff;font-size:11.5px;color:var(--ink2);padding:6px 9px;cursor:pointer}
+  .seg button+button{border-left:1px solid #e6ebef}
+  .seg button.on{background:var(--ink);color:#fff}
+  .ex{display:flex;gap:6px;flex-wrap:wrap;margin-top:9px}
+  .ex button{font-size:11px;color:#3d5a6b;background:#f2f7fb;border:1px solid #dbe8f1;border-radius:999px;
+             padding:3px 9px;cursor:pointer}
+  .ex button:hover{background:#e6f1f9}
+  .note{font-size:11.5px;color:var(--ink2);margin-top:8px;display:flex;gap:7px;align-items:center}
+  .note i{font-style:normal;width:6px;height:6px;border-radius:50%;background:var(--survey);flex:0 0 6px}
+  .note.warn i{background:var(--warn)} .note.bad i{background:var(--bad)}
+
+  #feed{flex:1;min-width:0;min-height:0;overflow:auto;padding:14px 16px 30px}
+  .fwrap{max-width:860px;margin:0 auto}
+  .pstrip{position:sticky;top:-14px;z-index:4;display:flex;gap:5px;align-items:center;flex-wrap:wrap;
+          padding:8px 2px 7px;margin:-14px 0 10px;background:rgba(245,246,248,.95);backdrop-filter:blur(6px);
+          border-bottom:1px solid var(--line)}
+  .pstrip button{font:10px var(--mono);display:flex;gap:5px;align-items:center;background:#fff;
+                 border:1px solid var(--line);border-radius:999px;padding:3px 8px;cursor:pointer;color:var(--ink2)}
+  .pstrip button:hover{background:#fff;border-color:#c3ced7}
+  .pstrip button i{width:5px;height:5px;border-radius:50%}
+  .pstrip button b{font-weight:600;color:var(--dim)}
+  .msg{margin-bottom:8px;border-radius:9px;border:1px solid var(--line);background:#fff;padding:9px 12px;
+       border-left:3px solid #cfd6dc;position:relative}
+  .msg.future{opacity:.32;filter:saturate(.35)}
+  .msg.cur{box-shadow:0 0 0 1px var(--survey),0 4px 14px rgba(47,127,181,.14);border-color:var(--survey)}
+  .msg .hd{display:flex;gap:7px;align-items:center;flex-wrap:wrap;font:10.5px var(--mono);color:var(--dim)}
+  .msg .why{margin-top:5px;font-size:13px;color:var(--ink2)}
+  .msg .args{margin-top:6px;font:11px/1.5 var(--mono);color:#4c5a66;background:#fafbfc;border:1px solid #eceff2;
+             border-radius:5px;padding:6px 8px;white-space:pre-wrap;word-break:break-all;max-height:110px;overflow:auto}
+  .msg.user{background:#f7fafc;border-left-color:#9fb3c2}
+  .msg.user .t{font:12.5px/1.65 var(--mono);white-space:pre-wrap;max-height:120px;overflow:hidden;
+               mask-image:linear-gradient(#000 72%,transparent)}
+  .msg.user.open .t{max-height:none;mask-image:none}
+  .msg.call{background:#fcfdfe;border-left-color:#9dc2d8}
+  .msg.phase{margin:14px 0 9px;background:transparent;border:none;border-top:1px dashed #cfd8df;
+             border-radius:0;padding:10px 0 0;display:flex;align-items:center;gap:9px;font:11px var(--mono);color:var(--dim)}
+  .msg.phase b{color:var(--ink2)}
+  .msg.done{background:#f2f8fb;border-left-color:var(--survey)}
+  .msg.anom{background:#fff9ec;border-left-color:var(--warn)}
+  .msg.anom.bad{background:#fdf3f2;border-left-color:var(--bad)}
+  .msg.anom.fix{background:#f1faf5;border-left-color:var(--ok)}
+  .tag{font:10px var(--mono);padding:2px 5px;border-radius:4px;background:#eef1f4;color:var(--ink2)}
+  .tool{font:600 12px var(--mono);color:#123}
+  .excerpt{font:11px/1.55 var(--mono);color:#4c5a66;margin-top:5px;white-space:pre-wrap;word-break:break-word;
+           max-height:74px;overflow:hidden;mask-image:linear-gradient(#000 66%,transparent);cursor:pointer}
+  .msg.wide .excerpt{max-height:none;mask-image:none}
+  .raw{font:10.5px/1.5 var(--mono);color:#41505c;background:#f7f9fb;border:1px dashed #dde3e8;border-radius:5px;
+       padding:7px 9px;margin-top:6px;max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all;display:none}
+  .okc{font:600 10.5px var(--mono);color:var(--ok)} .badc{font:600 10.5px var(--mono);color:var(--bad)}
+  .emptyfeed{color:var(--dim);font-size:12.5px;text-align:center;padding:40px 20px;line-height:2}
+  .msg.briefmsg{background:#f6fafd;border-left-color:var(--survey)}
+  .briefmsg .bfx{font-size:11.5px;color:var(--dim);margin-top:5px;line-height:1.6}
+  .bqrow{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:7px}
+  .blab{font:10px var(--mono);color:var(--dim);min-width:76px}
+  .bq{font:10.5px var(--mono);background:#e9f1f8;color:#1d4e6b;border-radius:4px;padding:2px 6px}
+  .bq i{font-style:normal;color:#5e7f95;margin-left:5px}
+  .bz{font-size:11px;background:#fff;border:1px solid var(--line);border-radius:4px;padding:1px 6px;color:var(--ink2)}
+  .briefmsg .bprompt{display:none;max-height:260px}
+  .briefmsg.open .bprompt{display:block}
+
+  .rebar{flex:0 0 auto;border-top:1px solid var(--line);background:#fff;padding:8px 14px;
+         display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .rebar .btn{padding:5px 9px;font-size:11.5px}
+  .rebar input[type=range]{flex:1;min-width:120px;accent-color:var(--survey)}
+  .rebar .cnt{font:10.5px var(--mono);color:var(--dim);min-width:78px;text-align:right}
+
+  /* 右：三张可折叠卡 */
+  #right{overflow:auto;background:#fbfcfd;padding:10px 10px 30px}
+  .rcard{background:#fff;border:1px solid var(--line);border-radius:9px;margin-bottom:9px;overflow:hidden}
+  .rcard>button{width:100%;display:flex;align-items:center;gap:8px;background:#fcfdfe;border:none;
+                border-bottom:1px solid var(--line);padding:8px 10px;cursor:pointer;text-align:left}
+  .rcard>button b{font-size:12px;font-weight:600}
+  .rcard>button span{font:10px var(--mono);color:var(--dim);margin-left:auto}
+  .rcard>button i{font-style:normal;color:#9aa4ac;font-size:11px;transition:transform .15s}
+  .rcard.closed>button{border-bottom-color:transparent}
+  .rcard.closed>button i{transform:rotate(-90deg)}
+  .rcard.closed .body{display:none}
+  .rcard .body{padding:9px 10px 11px}
+  #shotwrap{position:relative;display:flex;align-items:center;justify-content:center;background:#fff;
+            min-height:120px;border:1px solid var(--line2);border-radius:6px;overflow:hidden}
+  #shot{display:block;width:100%}
+  .navb{position:absolute;top:50%;transform:translateY(-50%);width:26px;height:26px;border-radius:50%;
+        border:1px solid var(--line);background:rgba(255,255,255,.94);cursor:pointer;font-size:13px;color:var(--ink2)}
+  .navb.l{left:6px} .navb.r{right:6px}
+  .cap{margin-top:7px;font-size:11.5px;color:var(--ink2)}
+  .cap b{display:block;font-size:12px;color:var(--ink);margin-bottom:2px}
+  .yaws{display:flex;gap:5px;flex-wrap:wrap;margin-top:7px}
+  .yaw{font:10px var(--mono);padding:2px 7px;border-radius:999px;border:1px solid var(--line);
+       background:#fff;color:var(--dim);cursor:pointer}
+  .yaw.on{border-color:var(--survey);color:var(--survey);background:#eef6fb}
+  .tabs{display:flex;gap:4px;margin-bottom:8px}
+  .tabs button{font-size:11px;padding:4px 9px;border-radius:6px;border:1px solid var(--line);
+               background:#fff;color:var(--ink2);cursor:pointer}
+  .tabs button.on{background:var(--ink);border-color:var(--ink);color:#fff}
+  .ln{display:flex;gap:6px;align-items:flex-start;margin:3px 0;font-size:11.5px;color:var(--ink2);line-height:1.5}
+  .ln i{font-style:normal;color:var(--dim);flex:0 0 9px;font-family:var(--mono)}
+  .ln.ok i{color:var(--ok)} .ln.bad i{color:var(--bad)}
+  .ln code{font-size:10.5px;color:#3d5a6b;background:#f4f8fb;border-radius:3px;padding:0 3px}
+  .ansrow{display:flex;justify-content:space-between;gap:8px;font:11.5px/1.55 var(--mono);padding:3px 2px;
+          cursor:pointer;border-radius:4px}
+  .ansrow:hover{background:#f3f8fc}
+  .ansrow .v{font-weight:600;text-align:right;word-break:break-word}
+  .ansrow .e{color:var(--dim);font-size:10px;font-weight:400}
+  .ansblock{padding:5px 2px;border-bottom:1px solid var(--line2)}
+  .ansblock .an{font:10.5px var(--mono);color:var(--dim);letter-spacing:.2px}
+  .ansblock .av{margin-top:3px;font-size:11.5px;color:var(--ink);overflow-x:auto}
+  .ansblock .av .txt{font-size:11.5px;line-height:1.6;max-height:110px;overflow:auto;white-space:pre-wrap}
+  .ansblock table{width:100%;table-layout:fixed}
+  .ansblock table td,.ansblock table th{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .wtab{border-collapse:collapse;width:100%;font-size:10.8px;margin-top:3px}
+  .wtab th{text-align:left;font-weight:600;color:var(--ink2);border-bottom:1px solid var(--line);padding:2px 4px}
+  .wtab td{padding:2px 4px;border-bottom:1px solid #f0f2f4;font-family:var(--mono)}
+  .empty{color:var(--dim);font-size:11.5px;padding:8px 2px;line-height:1.7}
+  .rfoot{font:10px var(--mono);color:var(--dim);line-height:1.7;padding:2px 3px}
+
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:#ccd4da;border-radius:5px}
+  ::-webkit-scrollbar-track{background:transparent}
+  @media (max-width:1240px){
+    .lab{grid-template-columns:216px minmax(0,1fr) 350px}
+  }
+  @media (max-width:1080px){
+    .lab{grid-template-columns:200px minmax(0,1fr)}
+    #right{display:none}
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <a class="brand" href="#/">几何实验场 <span class="m">HACK26</span><small>STUDIO</small></a>
+    <nav id="nav">
+      <a href="#/" data-nav="home">赛事与解法</a>
+      <a href="#/lab" data-nav="lab">实验场</a>
+    </nav>
+    <div class="spacer"></div>
+    <div class="hstat" id="hstat"></div>
+  </header>
+  <main id="view"></main>
+</div>
+<script>
+let BOOT = window.__STUDIO__ || null;     // 单文件快照注入点（studio.py export）
+let LIVE = !BOOT || BOOT.live !== false;  // 有后端才叫现场；快照是只读回放
+const LIVE_URL = "http://127.0.0.1:8770/#/lab";
+const PH = ["SURVEY","IDENTIFY","MEASURE","VERIFY","EDIT","REVALIDATE","REPORT"];
+const PCOL = {SURVEY:"var(--survey)",IDENTIFY:"var(--identify)",MEASURE:"var(--measure)",
+              VERIFY:"var(--verify)",EDIT:"var(--edit)",REVALIDATE:"var(--reval)",
+              RECOVER:"var(--recover)",REPORT:"var(--report)"};
+const PGATE = {SURVEY:"读入",IDENTIFY:"识别",MEASURE:"测量",VERIFY:"复核",
+               EDIT:"改几何",REVALIDATE:"读回复核",REPORT:"提交"};
+const S = {
+  home:null, run:null, events:[], idx:0, playing:false, timer:null, speed:1,
+  scene:0, orbit:0, showAll:true, toolSel:null, tab:"read",
+  liveTag:null, since:0, poll:null, liveInfo:null, brief:null,
+  frames:{}, open:{geo:true, io:true, ans:true}, archive:false, booted:false
+};
+const $ = id => document.getElementById(id);
+const esc = s => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = (x,n=3) => (x==null||isNaN(x)) ? "—" : Number(x).toFixed(n);
+const num = v => String(Number(v.toFixed(6)));
+const head = () => $("view");
+
+/* ================================================================ 路由 */
+function route(){
+  const h = location.hash || "#/";
+  const lab = h.indexOf("#/lab") === 0;
+  document.querySelectorAll("nav a").forEach(a=>a.classList.toggle("on", a.dataset.nav===(lab?"lab":"home")));
+  stop();
+  if(lab) enterLab(); else renderHome();
+}
+window.addEventListener("hashchange", route);
+
+/* ================================================================ 主页 */
+async function loadHome(){
+  if(S.home) return S.home;
+  S.home = BOOT ? BOOT.home : await fetch("/api/home").then(r=>r.json());
+  return S.home;
+}
+async function renderHome(){
+  head().className = "home";
+  const h = await loadHome();
+  const T = h.tools || [], G = h.groups || [];
+  const st = h.stats || {};
+  document.title = "几何实验场 · 从一句话到可审计的答案";
+  const byName = {}; T.forEach(t=>byName[t.name]=t);
+  const toolCard = t => `
+    <div class="tool" data-tool="${esc(t.name)}">
+      <div class="tn"><i style="background:${PCOL[(t.phases||[])[0]]||"#cfd7de"}"></i>${esc(t.name)}</div>
+      <div class="td">${esc(t.desc)}</div>
+      <div class="tm">${(t.phases||[]).map(p=>`<span>${p}</span>`).join("")}${t.unit?`<span>${esc(t.unit.split("（")[0])}</span>`:""}</div>
+      <div class="more2">前置：${esc(t.pre||"—")}
+返回：${esc(t.returns||"—")}
+降级：${esc(t.degrade||"—")}
+参数：${esc(Object.keys(t.params||{}).join(" / ")||"—")}</div>
+    </div>`;
+  head().innerHTML = `<div class="wrap">
+    <div class="hero">
+      <div class="kicker">HACK26 · 几何智能体</div>
+      <h1>从一句话和一个模型文件，到可审计的答案</h1>
+      <p>输入只有两样：<b>一句自然语言</b>、<b>一个模型文件</b>。系统里没有内置题目，也没有预置的解题路径——
+         「要交什么、按什么口径量」由管线从这句话里读出来，读出来的结构化规格只是中间产物，不是要人填的表。
+         模型的名称、类别、材质、Pset 在读入时就被丢掉，agent 只能靠厚度、法向、落地标高、有没有洞口这些几何量
+         自己判断这是椅子、那是门扇，再自己决定切哪一刀、量哪一段。每个交出去的数字都能顺着账本追到某一次工具调用的返回。</p>
+      <div class="stats">
+        <div class="stat"><b>${st.n_tools||40}</b><span>个与任务无关的工具</span></div>
+        <div class="stat"><b>${st.n_checks||90}</b><span>项独立验收全通过</span></div>
+        <div class="stat"><b>${st.n_write_outputs||12}</b><span>个改完并读回复核的模型</span></div>
+        <div class="stat"><b>0</b><span>处硬编码的题号或答案</span></div>
+      </div>
+    </div>
+
+    <h2>赛事要求，我们怎么读 <em>READING</em></h2>
+    <div class="grid2">
+      <div class="card"><h3>输入只有两样东西</h3>
+        <p>一句原话和一个模型文件，没有第三种输入。任务卡不是输入，是<b>管线产物</b>：
+           <code>agent/brief.py</code> 把原话读成「交付类型 / 要交的量 / 题面点名的实体 / 原话自带的约束」，
+           再渲染成注入 system 的说明。工具注册表里查不到任何题号，
+           模型里读不到任何语义标签——<code>load(keep_metadata=false)</code> 是默认值。</p>
+        <div class="mini">16 个实体、一个名字都不给的那一轮，考的就是这一步：先把「哪些是墙、哪个是门」判出来。</div></div>
+      <div class="card"><h3>答案必须能追证</h3>
+        <p>提交的每个数字都必须在此前某次工具返回里真实出现过（1e-6 容差），
+           派生量不能手写——减法除法一律走 <code>calc</code>，因为手写的算式在账本里没有出处。
+           编一个「看起来合理」的数，结构上就过不了审计。</p>
+        <div class="mini">audit_reject 不是异常，是这个系统的正常出口之一。</div></div>
+      <div class="card"><h3>写层交的是文件</h3>
+        <p>「改模型」不能只在内存里改完就报数。改了几何必须 <code>emit</code> 落盘，
+           落盘必须<b>读回自己写出的那个文件</b>再用只读工具重量一遍。编辑函数自报的「我改对了」不算证据。</p>
+        <div class="mini">REVALIDATE 阶段的白名单里没有任何编辑工具——验证时还能改，就永远有一个没被验证的中间态。</div></div>
+      <div class="card"><h3>换一层皮，还成立吗</h3>
+        <p>同一道题，换格式（IFC→OBJ）、随机化对象名、绕竖轴转 45°/90°、把单位改成毫米，
+           答案必须一致。<code>compare.py</code> / <code>compare_edits.py</code> 把这件事做成矩阵，
+           矩阵里每一格都是真跑出来的，不是推断。</p>
+        <div class="mini">绕轴 90° 曾把写层打挂——锚点按世界轴写，转完就切错面。这条留在了限制清单里。</div></div>
+    </div>
+
+    <h2>解题骨架：七个阶段，三道闸 <em>LOOP</em></h2>
+    <div class="phases">
+      ${PH.map((p,i)=>`<div class="phase" style="border-top-color:${PCOL[p]}">
+        <b>${i+1}. ${p}</b><span>${esc(PHASE_DESC[p]||"")}</span><i>${esc(PGATE[p])}</i></div>`).join("")}
+    </div>
+    <p style="margin:-6px 0 14px;font-size:12px;color:var(--dim)">
+      只读任务（原话只要求量、不要求改）会跳过 EDIT / REVALIDATE，并留一条 <code>phase_skip</code> 记录 ——
+      不会为了「把流程走完」去动几何。</p>
+    <div class="layers">
+      <div class="layer"><b>编排层 · 只调度，不算数</b>
+        <p>阶段门控（越界即拒并留痕）、步骤号分配、观察压缩、失败升级（RECOVER 自救）、预算与停滞判定。
+           这一层不含任何几何计算，所有数值来自工具。</p>
+        <div class="mini mono">sandbox/agent/loop.py</div></div>
+      <div class="layer"><b>工具层 · 与题目无关</b>
+        <p>${st.n_tools||40} 个算子：读入、分组、主参照系、筛选、合并、包含、间隙、距离、剖面、写层四原语、
+           碰撞与扫掠、形状分解、反解拟合、提交。任务差异只体现在调用序列里。</p>
+        <div class="mini mono">sandbox/tools/*</div></div>
+      <div class="layer"><b>审计层 · 不信任任何自述</b>
+        <p>哈希链账本逐条串起决策、调用、阶段切换与拒绝；答案审计核对每个数字的出处；
+           写层产物用评委立场只读磁盘重量（81 项检查）。</p>
+        <div class="mini mono">sandbox/core/runtime.py · verify_edits.py</div></div>
+    </div>
+
+    <h2>一句话能被解到什么程度 <em>CAPABILITY</em></h2>
+    <p style="margin:-4px 0 14px;font-size:12.5px;color:var(--dim)">
+      不谈「做了几道题」，谈「哪几类问题已经有可复核的出口」。每一格都能点进实验场，用自己的一句话重跑。</p>
+    <div class="grid2">
+      <div class="card"><h3>度量：从「房间多大」到「这块截面多大」</h3>
+        <p>净宽/净深/层高、洞口尺寸、投影与截面面积、封闭网格体积、曲面拟合半径、按目标面积反解切面高度。
+           数值由只读工具给出，派生量走 <code>calc</code>，报告里没有手写算式。</p>
+        <div class="mini">出口：<code>section</code> <code>proj_area</code> <code>fit_sphere</code> <code>solve_section_height</code></div></div>
+      <div class="card"><h3>关系：贴合、相切、在内、越界</h3>
+        <p>带符号距离按<b>表面</b>量（0 = 相切，正 = 有间隙，负 = 穿插）；面接触面积只算共面重叠，
+           边接触、角接触天然为 0；平面包含与三维包含分开判，坐在地上的家具不会被判成越界。</p>
+        <div class="mini">出口：<code>sphere_region</code> <code>contact_area</code> <code>contains</code> <code>clearance</code></div></div>
+      <div class="card"><h3>运动：撞没撞上、第一次接触在哪一度</h3>
+        <p>扫地式粗扫 + 二分细化找首次接触角；边穿刺与顶点侵入双判据，能分开「贴合」「穿插」「只是挨着」三种状态。
+           接触角给的是区间，不是「大概 87 度」。</p>
+        <div class="mini">出口：<code>collide</code> <code>sweep_rotate</code> <code>sweep_translate</code></div></div>
+      <div class="card"><h3>写层：改完要交文件，交完要读回复核</h3>
+        <p>平移、单轴拉伸、半空间切割、圆孔重建、绕轴旋转五个原语；改了几何必须 <code>emit</code> 落盘，
+           落盘必须读回<b>自己写出的那个文件</b>再量。编辑函数自报「我改对了」不算证据。</p>
+        <div class="mini">出口：${st.n_write_outputs||12} 个改完的模型，${st.n_checks||90} 项验收全部只读磁盘产物</div></div>
+    </div>
+
+    <h2>${st.n_tools||40} 个工具 <em>TOOLS</em></h2>
+    <p style="margin:-4px 0 14px;font-size:12.5px;color:var(--dim)">
+      点开任意一个可以看到前置条件、返回物与降级路径——这三项和描述一起进 LLM 的 tool schema，
+      所以模型看到的信息和这里一样，不多不少。</p>
+    ${G.map(g=>`<div class="tgroup">
+      <div class="tghead"><b>${esc(g.name)}</b><span>${esc(g.note)}</span>
+        <span style="margin-left:auto;font:10px var(--mono);color:var(--dim)">${g.tools.length} 个</span></div>
+      <div class="tools">${g.tools.map(n=>byName[n]?toolCard(byName[n]):"").join("")}</div>
+    </div>`).join("")}
+
+    <div class="cta">
+      <div style="flex:1"><b>去实验场，自己出一道题</b>
+        <p>给一段自然语言、选一个模型文件，agent 当场跑；左侧 ${st.n_tools||40} 个工具会随调用亮起来，
+           右侧的画面、读写层与答案可以分别展开。</p></div>
+      <a class="btn" href="#/lab">进入实验场 →</a>
+    </div>
+    <div class="foot">
+      python studio.py &nbsp;·&nbsp; 可出题、可回放、可存档（本地 127.0.0.1）<br>
+      python view.py &nbsp;·&nbsp; 只读观测台（不写盘、不触发工具、不需要 key）<br>
+      bash reproduce.sh &nbsp;·&nbsp; 一条命令从造变体跑到 81 项验收
+    </div>
+  </div>`;
+  head().querySelectorAll(".tool").forEach(el=>el.onclick=()=>el.classList.toggle("open"));
+}
+const PHASE_DESC = {
+  SURVEY:"读入、分组、定主参照系。没有这一步，后面的 sid 无从谈起。",
+  IDENTIFY:"把题面点名的角色压到唯一命中，压不到就补判别量。",
+  MEASURE:"对已定角色做题目要求的测量，取值必须带见证物。",
+  VERIFY:"换一条路径复核同一个数，防止测量本身错。",
+  EDIT:"才是改几何。改完必须落盘。",
+  REVALIDATE:"只读工具重开产物文件重量，编辑层不许自证。",
+  REPORT:"提交答案与证据清单，逐数审计。"
+};
+
+/* 快照也能自己找个后端：如果这个页面是被 studio.py 或同源服务托管着，
+   探一次 /api/home 成功就当场切成现场模式 —— 免得「打开文件发现输入框不能用」。 */
+async function tryUpgrade(){
+  if(LIVE || !/^https?:/.test(location.protocol)) return false;
+  try{
+    const ac = new AbortController();
+    const t = setTimeout(()=>ac.abort(), 1500);
+    const r = await fetch("/api/home", {signal:ac.signal});
+    clearTimeout(t);
+    if(!r.ok) return false;
+    const j = await r.json();
+    if(!j || !j.tools || !j.tools.length) return false;
+    BOOT = null; LIVE = true; S.home = j; S.runs = null; S.run = null; S.events = [];
+    return true;
+  }catch(e){ return false; }
+}
+
+/* ================================================================ 实验场骨架 */
+async function enterLab(){
+  head().className = "";
+  await tryUpgrade();
+  await loadHome();
+  if(!S.booted){ S.booted = true; }
+  const runs = BOOT ? Object.keys(BOOT.runs||{}) : (await fetch("/api/runs").then(r=>r.json())).runs;
+  if(BOOT){
+    S.runs = (runs||[]).map(t=>({tag:t, status:(BOOT.runs[t].meta||{}).status, turns:(BOOT.runs[t].meta||{}).turns}));
+  } else {
+    S.runs = runs;
+  }
+  head().innerHTML = `<div class="lab">
+    <aside id="rail"></aside>
+    <section class="mid">
+      <div id="composer"></div>
+      <div id="feed"><div class="fwrap" id="fwrap"></div></div>
+      <div class="rebar" id="rebar"></div>
+    </section>
+    <aside id="right"></aside>
+  </div>`;
+  renderRail(); renderComposer(); renderBar(); renderRight();
+  const tg = /[?&]tag=([\w.\-]+)/.exec(location.hash||"");
+  if(tg && !S.run){
+    // 不去查 S.runs：它可能还没拉回来，而 deep link 就是「直接打开这一轮」的意思。
+    // 打不打得开由服务端说了算，失败时 loadRun 会把原因写在提示行里。
+    await loadRun(tg[1], true);
+    if(S.run) return;
+  }
+  const lv = /live=([\w.\-]+)/.exec(location.hash||"");
+  if(lv && LIVE && !S.run){
+    S.liveTag = lv[1]; S.since = 0; S.events = [];
+    setNote("接管正在跑的实验 " + S.liveTag + " …","");
+    renderFeed(); startPolling(); return;
+  }
+  if(S.run) { renderFeed(); }
+  else {
+    const pick = S.runs.find(r=>r.tag==="ag_ifc") || S.runs.find(r=>r.status==="OK") || S.runs[0];
+    if(pick) await loadRun(pick.tag, true); else renderFeed();
+  }
+}
+
+/* ---------------- 左：工具映射 ---------------- */
+function renderRail(){
+  const h = S.home, G = h.groups||[], byName={};
+  (h.tools||[]).forEach(t=>byName[t.name]=t);
+  const counts = {}, order = [];
+  S.events.forEach(e=>{
+    const p = e.payload||{};
+    if((e.kind==="decision"||e.kind==="tool_call") && p.tool){
+      if(counts[p.tool]==null){ counts[p.tool]=0; order.push(p.tool); }
+      if(e.kind==="tool_call") counts[p.tool]++;
+    }
+  });
+  $("rail").innerHTML = `<div class="railhd"><b>工具映射</b>
+      <span>${(h.tools||[]).length} 个 · 已用 ${order.length}</span></div>
+    <div class="railbody">
+      ${G.map(g=>`<div class="rgroup">${esc(g.name)}<b>${g.tools.filter(n=>counts[n]).length}/${g.tools.length}</b></div>
+        ${g.tools.filter(n=>byName[n]).map(n=>`<div class="trow${counts[n]?" used":""}${S.toolSel===n?" sel":""}"
+            data-tool="${esc(n)}" title="${esc(byName[n].desc)}">
+          <i class="sd"></i><span class="nm">${esc(n)}</span>
+          <span class="ct">${counts[n]||""}</span></div>`).join("")}`).join("")}
+    </div>
+    <div class="railtools">
+      <span>点击筛选该工具的调用</span>
+      <button class="btn" id="rclear" style="margin-left:auto">清除</button>
+    </div>`;
+  $("rail").querySelectorAll(".trow").forEach(el=>el.onclick=()=>{
+    S.toolSel = (S.toolSel===el.dataset.tool) ? null : el.dataset.tool;
+    renderRail(); renderFeed();
+  });
+  const c = $("rclear"); if(c) c.onclick=()=>{ S.toolSel=null; renderRail(); renderFeed(); };
+  hotTool(S.toolSel || currentTool());
+}
+function hotTool(name){
+  $("rail").querySelectorAll(".trow").forEach(el=>el.classList.toggle("hot", el.dataset.tool===name));
+}
+function flashTool(name){
+  const el = [...$("rail").querySelectorAll(".trow")].find(x=>x.dataset.tool===name);
+  if(!el) return;
+  el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
+}
+
+/* ---------------- 中：出题面板 ---------------- */
+async function renderComposer(){
+  const models = LIVE ? await fetch("/api/models").then(r=>r.json()).then(r=>r.models).catch(()=>[]) : [];
+  const cur = S.run ? S.run.meta : null;
+  // 只回填「原话」。老运行存的是任务卡正文，回填进这个框会误导成「填卡出题」，宁可留空。
+  const raw = (cur && cur.brief && cur.brief.raw) || (cur ? "" : (S.ask || ""));
+  const hint = LIVE
+    ? (cur ? `已载入 ${esc(cur.tag||"")} · ${esc(cur.status||"")}${cur.turns?(" · "+cur.turns+" 轮"):""}（改完原话可直接重出）`
+           : "一句话 + 一个模型文件，就是全部输入")
+    : "单文件快照：可以回放已有的整轮过程，出题要在本机服务上跑";
+  $("composer").innerHTML = `
+    <div class="ctop"><b>出题</b>
+      <span class="hint">${hint}</span>
+      <span class="spacer"></span>
+      <select id="rsel" title="载入已有运行（读存档）">
+        <option value="">载入已有运行…</option>
+        ${(S.runs||[]).filter(r=>r.kind!=="dev").map(r=>`<option value="${esc(r.tag)}" ${cur&&cur.tag===r.tag?"selected":""}>${esc(r.tag)} · ${esc(r.status||"")}${r.turns?(" · "+r.turns+" 轮"):""}</option>`).join("")}
+      </select>
+    </div>
+    <textarea id="q" rows="3" placeholder="用一句话说清要做什么，例如：把这个模型的房间净宽、净深量出来，列出所有贯通开口的尺寸，并给出地板顶面面积与地面家具占地之外的剩余面积。">${esc(raw)}</textarea>
+    <div class="crow">
+      <select id="model">
+        ${models.length?models.map(m=>`<option value="${esc(m.path)}" ${m.exists?"":"data-missing=1"}>${esc(m.label)}${m.exists?"":"（缺失）"}</option>`).join("")
+          :`<option value="">${BOOT?"快照：模型已内嵌在运行记录里":"模型：赛方 IFC"}</option>`}
+      </select>
+      <label class="filelab" title="上传一个模型文件（ifc/obj/gltf/usd，≤80MB）">上传模型
+        <input type="file" id="upfile" accept=".ifc,.obj,.gltf,.usd,.usda,.usdc" style="display:none">
+      </label>
+      ${LIVE?"":`<button class="btn" id="gotolive" title="本机跑着 python studio.py 时点这里">去实验场出题</button>`}
+      <span class="spacer"></span>
+      <button class="btn go" id="go" ${LIVE?"":"data-off=1"}>开始解题</button>
+    </div>
+    <div class="note${LIVE?"":" warn"}" id="cnote"><i></i><span>${LIVE
+      ? "输入只有两样：一段原话、一个模型文件。没有内置题目，也不需要填任何字段——agent 要交什么、按什么口径量，由管线从句子里读出来（跑起来后第一步可展开看它读成了什么）。"
+      : "这一份是导出的单文件快照，没有后端，所以点「开始解题」不会真跑（输入框可以编辑，但只用于本地起草）。要现场出题：在 sandbox 目录执行 python studio.py，再打开 " + LIVE_URL + "。"}</span></div>`;
+
+  const up = $("upfile");
+  if(up) up.onchange = async () => {
+    const f = up.files[0]; if(!f) return;
+    if(!LIVE){ setNote("快照模式不能上传：先在本机跑 python studio.py。","warn"); return; }
+    setNote("上传中：" + f.name + "（" + (f.size/1048576).toFixed(1) + " MB）", "");
+    const r = await fetch("/api/upload", {method:"POST", headers:{"X-Filename":f.name}, body:f});
+    const j = await r.json();
+    if(j.error){ setNote("上传失败："+j.error, "bad"); return; }
+    const ms = await fetch("/api/models").then(r=>r.json()).then(r=>r.models);
+    const sel = $("model");
+    sel.innerHTML = ms.map(m=>`<option value="${esc(m.path)}">${esc(m.label)}</option>`).join("");
+    sel.value = j.path;
+    setNote("已上传：" + f.name + " → " + j.path, "");
+  };
+  const go = $("go"); if(go) go.onclick = startLive;
+  const gl = $("gotolive"); if(gl) gl.onclick = ()=> window.open(LIVE_URL, "_blank");
+  const rs = $("rsel"); if(rs) rs.onchange = ()=>{ if(rs.value) loadRun(rs.value, true); };
+  const q = $("q");
+  if(q && LIVE && !raw) setTimeout(()=>q.focus(), 60);
+  if(q) q.onkeydown = e => { if((e.metaKey||e.ctrlKey) && e.key==="Enter"){ e.preventDefault(); startLive(); } };
+}
+function setNote(txt, cls){
+  const n = $("cnote"); if(!n) return;
+  n.className = "note " + (cls||"");
+  n.querySelector("span").textContent = txt;
+}
+
+/* ---------------- 出题 ---------------- */
+async function startLive(){
+  const text = ($("q").value||"").trim();
+  if(!LIVE){
+    setNote("快照模式没有后端，这一轮不会真跑。本机执行 python studio.py 后打开 " + LIVE_URL + " 再出题（原话已留在输入框里，可直接复制）。","warn");
+    return;
+  }
+  if(text.length < 12){ setNote("题目太短了：至少给一句完整的要求。","warn"); $("q").focus(); return; }
+  const model = $("model").value || null;
+  if(!model){ setNote("先选一个模型（或上传一个）。","warn"); return; }
+  const btn = $("go"); btn.disabled = true; btn.textContent = "启动中…";
+  try{
+    const r = await fetch("/api/solve", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({text, model, max_turns:70, wall:900})});
+    const j = await r.json();
+    if(j.error) throw new Error(j.error);
+    S.liveTag = j.tag; S.since = 0; S.events = []; S.run = null; S.archive=false;
+    S.ask = text; S.brief = j.brief || null;
+    renderComposer();
+    S.toolCounts = {}; S.idx = 0; S.playing = false;
+    setNote(j.note + " · 已启动 " + j.tag, "");
+    renderRight(); renderFeed(); startPolling();
+  }catch(e){
+    setNote("启动失败：" + e.message, "bad");
+  }finally{
+    btn.disabled = false; btn.textContent = "开始解题";
+  }
+}
+function startPolling(){
+  stopPolling();
+  S.poll = setInterval(async ()=>{
+    if(!S.liveTag) return stopPolling();
+    try{
+      const r = await fetch(`/api/live?tag=${encodeURIComponent(S.liveTag)}&since=${S.since}`).then(r=>r.json());
+      if(r.error) throw new Error(r.error);
+      S.liveInfo = r;
+      if(r.events && r.events.length){
+        S.events = S.events.concat(r.events);
+        S.since = r.n;
+        renderFeed(); renderRail();
+        S.idx = S.events.length;
+        setCursor(S.idx);
+      }
+      renderBar(); renderStatus();
+      if(r.done){ stopPolling(); await loadRun(r.tag, true); }
+      else if(!r.running && r.status!=="RUNNING"){
+        stopPolling();
+        setNote("进程提前结束（"+r.status+"）：看下方时间线里的最后一条。","bad");
+      }
+    }catch(e){ /* 轮询失败不打断页面 */ }
+  }, 800);
+}
+function stopPolling(){ if(S.poll){ clearInterval(S.poll); S.poll=null; } }
+
+/* ---------------- 载入一个已完成运行 ---------------- */
+async function loadRun(tag, keepComposer){
+  stopPolling();
+  let run;
+  if(BOOT && BOOT.runs && BOOT.runs[tag]){
+    run = BOOT.runs[tag];
+    if(BOOT.frames && BOOT.frames[tag]) S.frames = BOOT.frames[tag];
+    S.archive = true;
+  } else {
+    run = await fetch("/api/run?tag="+encodeURIComponent(tag)).then(r=>r.json());
+    if(run.error) { setNote("载入失败："+run.error,"bad"); return; }
+    S.archive = false;
+  }
+  S.run = run; S.events = run.events||[]; S.since = S.events.length;
+  S.ask = (run.meta||{}).card_text || ""; S.brief = (run.meta||{}).brief || null;
+  const st = run.steps||[];
+  const hasRead = st.some(x=>["section","profile","proj_area","fit_sphere","sphere_region","contact_area","contains","solve_section_height","calc"].includes(x.tool));
+  const hasWrite = st.some(x=>x.tool==="emit") || (run.events||[]).some(e=>e.kind==="geometry_edited");
+  S.tab = hasRead ? "read" : (hasWrite ? "write" : "read");
+  S.liveTag = null; S.idx = 0; S.scene = 0; S.orbit = 0; S.toolSel = null;
+  S.playing = false;
+  renderRail(); renderFeed(); renderBar(); renderRight(); renderStatus();
+  if(keepComposer) renderComposer();
+  setCursor(0);
+}
+
+/* ---------------- 中：对话流 ---------------- */
+function evPhase(e){
+  const p = e.payload||{};
+  if(p.phase) return p.phase;
+  if(e.kind==="phase") return p.to;
+  if(e.kind==="agent_end") return p.phase;
+  return null;
+}
+function renderFeed(){
+  const wrap = $("fwrap"); if(!wrap) return;
+  if(!S.events.length){
+    wrap.innerHTML = `<div class="emptyfeed">
+      还没有这一轮的记录。<br>
+      在上面写一句要求、选一个模型，点「开始解题」——<br>
+      左侧的工具会随调用亮起来，中间出现每一步的理由，右侧是画面、读写层与答案。</div>`;
+    return;
+  }
+  const steps = {}; (S.run && S.run.steps || []).forEach(s=>steps[s.id]=s);
+  const cnt = {}; S.events.forEach(e=>{ const p=evPhase(e); if(p) cnt[p]=(cnt[p]||0)+1; });
+  const out = [`<div class="pstrip">${PH.filter(p=>cnt[p]).map(p=>
+      `<button data-p="${p}" style="border-color:${PCOL[p]}33"><i style="background:${PCOL[p]}"></i>${p}<b>${cnt[p]}</b></button>`).join("")}
+      <span style="flex:1"></span><span class="mono" style="font-size:10px;color:var(--dim)">点阶段跳到该阶段第一步</span></div>`];
+  const m = (S.run && S.run.meta) || {};
+  const askText = (m.card_text || S.ask || "").trim();
+  out.push(`<div class="msg user" data-i="-1">
+    <div class="hd"><span class="tag">原话</span>
+      <span>${esc(S.liveTag ? "本轮输入" : (m.card||"本轮任务"))}</span>
+      <span style="margin-left:auto">${esc(m.model?("模型 "+m.model.split(/[\\/]/).pop()):"")}</span>
+      <span class="more">展开 ▾</span></div>
+    <div class="t">${esc(askText || "（这一轮没有留下原话）")}</div>
+  </div>`);
+  const brief = m.brief || S.brief;
+  if(brief && brief.kind){
+    const qs = (brief.quantities||[]).map(q=>`<span class="bq" title="${esc(q.note||"")}">${esc(q.name)}<i>${esc(q.unit)}</i></span>`).join("");
+    out.push(`<div class="msg briefmsg" data-i="-1">
+      <div class="hd"><span class="tag">管线编译</span>
+        <span>${brief.kind==="edit"?"改动模型并交文件":"只读测量并给数值"}</span>
+        <span class="tag">${esc(brief.chars||0)} 字原话</span>
+        <span style="margin-left:auto" class="more">看注入的说明 ▾</span></div>
+      <div class="bfx">这一步不是人填的表单：管线把上面的原话读成「要交什么、按什么口径量」，
+        结果直接注入 system，随后才轮到 agent 决定怎么解。</div>
+      ${qs?`<div class="bqrow"><span class="blab">要交的量</span>${qs}</div>`:""}
+      ${(brief.subjects||[]).length?`<div class="bqrow"><span class="blab">题面点名的实体</span>${brief.subjects.map(x=>`<span class="bz">${esc(x)}</span>`).join("")}</div>`:""}
+      ${(brief.rules||[]).length?`<div class="bqrow"><span class="blab">原话约束</span>${brief.rules.map(x=>`<span class="bz">${esc(x)}</span>`).join("")}</div>`:""}
+      <pre class="raw bprompt">${esc(brief.prompt||"")}</pre></div>`);
+  }
+  S.events.forEach((e,i)=>{
+    const k = e.kind, p = e.payload||{}, ph = evPhase(e)||"";
+    if(S.toolSel){
+      const t = p.tool || (steps[p.step]||{}).tool;
+      if(t !== S.toolSel) return;
+    }
+    if(k==="agent_start") return;
+    if(k==="decision"){
+      const st = steps[p.step]||{};
+      out.push(`<div class="msg click ph" data-i="${i}" data-tool="${esc(p.tool||"")}" style="border-left-color:${PCOL[ph]||"#cfd6dc"}">
+        <div class="hd"><span class="tag">#${esc(p.step||"")}</span>
+          <span class="tag" style="color:${PCOL[ph]||"var(--ink2)"};background:transparent;border:1px solid ${PCOL[ph]||"var(--line)"}">${esc(ph)}</span>
+          <span class="tool">${esc(p.tool)}</span>
+          ${p.expect_n!=null?`<span class="tag">预期 ${esc(p.expect_n)}</span>`:""}
+          ${st.n!=null?`<span class="tag">命中 ${esc(st.n)}</span>`:""}
+          ${st.rejected?`<span class="tag" style="background:#fdecea;color:#9d2b23">门控拒绝</span>`:""}</div>
+        <div class="why">${esc(p.why||"")}</div>
+        <div class="args">${esc(p.args||"")}</div></div>`);
+    } else if(k==="tool_call"){
+      const ok=p.ok, st=steps[p.step]||{};
+      out.push(`<div class="msg call click" data-i="${i}" data-tool="${esc(p.tool||"")}">
+        <div class="hd"><span class="${ok?"okc":"badc"}">${ok?"✓ 返回":"✗ 失败"}</span>
+          <span class="tag">${esc(p.tool)}</span>
+          <span>${fmt(p.ms,0)} ms · ${esc(p.digest||"")}</span></div>
+        <div class="excerpt">${esc(digestOf(st.obs || p.result_excerpt))}</div>
+        <pre class="raw">${esc(pretty(st.obs||p.result_excerpt||""))}</pre></div>`);
+    } else if(k==="phase"){
+      out.push(`<div class="msg phase" data-i="${i}">
+        <b style="color:${PCOL[p.to]||"var(--ink2)"}">${esc(p.from)} → ${esc(p.to)}</b>
+        <span>${esc((p.why||"").slice(0,220))}</span></div>`);
+    } else if(k==="geometry_edited"){
+      out.push(`<div class="msg anom" data-i="${i}" data-tool="${esc(p.tool||"")}" style="background:#fdf6f1;border-left-color:var(--edit)">
+        <div class="hd"><span class="tag" style="background:#f6e2d6;color:#a8451f">几何已改</span>
+          <span class="tool">${esc(p.tool)}</span><span class="tag">步骤 ${esc(p.step||"")}</span></div>
+        <div class="why" style="font-size:12px">这一步改了场景里的网格，不是量了一下。改完必须落盘再读回。</div></div>`);
+    } else if(k==="reloaded_own_output"){
+      out.push(`<div class="msg anom fix" data-i="${i}">
+        <div class="hd"><span class="tag" style="background:#d8f0ea;color:#12655f">读回自己的产物</span>
+          <span>${esc(String(p.path||"").split(/[\\/]/).pop())}</span></div>
+        <div class="why" style="font-size:12px">读的正是刚才写出去的那个文件 —— 只有这种读回才算复核。</div></div>`);
+    } else if(k==="agent_end"){
+      const status = p.status||"";
+      out.push(`<div class="msg done" data-i="${i}">
+        <div class="hd"><span class="tag">结束</span><span class="pill ${esc(status)}">${esc(status)}</span>
+          <span>${p.turn!=null?p.turn+" 轮":""} · ${fmt(p.elapsed_s,2)}s</span></div></div>`);
+    } else {
+      const bad=/reject|abort|error/.test(k), fix=/resolved|renamed/.test(k);
+      out.push(`<div class="msg anom${bad?" bad":""}${fix?" fix":""}" data-i="${i}">
+        <div class="hd"><span class="tag">${esc(k)}</span>${p.step?`<span class="tag">#${esc(p.step)}</span>`:""}</div>
+        <div class="why" style="font-size:12px">${esc(summarizePayload(p))}</div></div>`);
+    }
+  });
+  if(!S.events.some(e=>e.kind==="agent_end") && S.liveTag){
+    out.push(`<div class="msg" style="border-left-color:var(--survey);background:#f7fbfd">
+      <div class="hd"><span class="tag">运行中</span><span>${esc((S.liveInfo&&S.liveInfo.note)||"agent 正在解题")}</span></div>
+      <div class="why" style="font-size:12px;color:var(--dim)">工具调用会实时出现在这里，左侧对应的工具名会亮起。</div></div>`);
+  }
+  wrap.innerHTML = out.join("");
+  wrap.querySelectorAll(".msg").forEach(el=>{
+    el.onclick = ev=>{
+      if(ev.target.closest(".excerpt")){
+        el.classList.toggle("wide");
+        const raw = el.querySelector(".raw");
+        if(raw) raw.style.display = el.classList.contains("wide") ? "block" : "none";
+        ev.stopPropagation(); return;
+      }
+      const i = +el.dataset.i;
+      if(i>=0){ stop(); setCursor(i+1); }
+    };
+  });
+  wrap.querySelectorAll(".pstrip button").forEach(b=>b.onclick=()=>{
+    const p=b.dataset.p, i=S.events.findIndex(e=>evPhase(e)===p);
+    if(i>=0){ stop(); setCursor(i+1); }
+  });
+  const first = wrap.querySelector(".msg.user");
+  if(first){ first.onclick = ()=>first.classList.toggle("open"); }
+  wrap.querySelectorAll(".briefmsg").forEach(el=>{
+    el.onclick = ()=>el.classList.toggle("open");
+  });
+  applyCursor();
+}
+function summarizePayload(p){
+  if(p.n_evidence!=null && p.n_claims!=null)
+    return `答案通过审计 · 证据步骤 ${p.n_evidence} 条 · 主张 ${p.n_claims} 个`+(p.unknowns?` · 自认未知 ${p.unknowns} 项`:"");
+  if(p.problems) return p.problems.join("；");
+  if(p.reason) return p.reason;
+  if(p.detail) return p.detail;
+  if(p.from) return p.from+" → "+(p.to||"");
+  if(p.allowed) return `阶段 ${p.phase} 只允许 ${p.allowed.join(" / ")}，本次调用了 ${p.tool}`;
+  if(p.step) return "步骤 "+p.step+" · "+JSON.stringify(p).slice(0,180);
+  return JSON.stringify(p).slice(0,220);
+}
+function pretty(s){ try{ return JSON.stringify(JSON.parse(s),null,1); }catch(e){ return s||""; } }
+function digestOf(s){
+  if(!s) return "";
+  let j; try{ j=JSON.parse(s); }catch(e){
+    const n=/"n_solids":\s*(\d+)/.exec(s);
+    if(n) return `读入 ${n[1]} 个实体（原文被预算截断，点开可看）`;
+    const sids=[...new Set([...s.matchAll(/"sid":\s*"([A-Za-z]\d+)"/g)].map(m=>m[1]))];
+    if(sids.length) return `${sids.length} 个实体：${sids.slice(0,6).join(" ")}`;
+    return s.slice(0,300);
+  }
+  const f3 = x => (Math.abs(x)>=100 ? x.toFixed(1) : x.toFixed(3));
+  if(j==null) return String(s||"").slice(0,300) || "（无返回）";
+  if(j.meta && j.solids) return `读入 ${j.solids.length} 个实体 · ${j.meta.format} · 单位 ${j.meta.unit}（${j.meta.unit_source||"?"}）`;
+  if(j.items) return `${j.items.length} 条命中 · `+j.items.slice(0,4).map(i=>`${i.sid}[${(i.dims||[i.d0,i.d1,i.d2]).map(f3).join("×")}]`).join("  ");
+  if(j.item && j.item.sid) return `对齐到 ${j.item.sid} · ${(+j.item.value).toFixed(6)} m`;
+  if(j.rows && j.rows.length) return `${j.rows.length} 行 · `+j.rows.slice(0,4).map(r=>`${r.sid||r.b}=${(+r.value).toFixed(6)}`).join("  ");
+  if(j.groups) return `${j.groups.length} 个互不相连的组 · `+j.groups.map(g=>`c${g.cid}:${g.n}`).join("  ");
+  if(j.value!=null && j.witness_a) return `${(+j.value).toFixed(6)} m · 见证点 (${j.witness_a.map(x=>+x.toFixed(2)).join(", ")}) → (${j.witness_b.map(x=>+x.toFixed(2)).join(", ")})`;
+  if(j.info && j.axes) return `覆盖率 ${j.info.coverage} · ${j.info.n_clusters||"?"} 簇法向 · 轴对齐 ${j.info.is_axis_aligned}`;
+  if(j.ok!=null) return JSON.stringify(j).slice(0,240);
+  return JSON.stringify(j).slice(0,300);
+}
+
+/* ---------------- 回放条 ---------------- */
+function renderBar(){
+  const n = S.events.length;
+  $("rebar").innerHTML = `
+    <button class="btn" id="pp">${S.playing?"⏸ 暂停":"▶ 回放"}</button>
+    <button class="btn" id="prev">◀</button>
+    <button class="btn" id="next">▶</button>
+    <input type="range" id="scrub" min="0" max="${Math.max(n,1)}" value="${S.idx}">
+    <span class="cnt">${S.idx} / ${n} 条</span>
+    <button class="btn" id="spd">${S.speed}×</button>
+    <button class="btn" id="allbtn">${S.showAll?"全部":"逐条"}</button>
+    ${LIVE?`<span style="width:1px;height:18px;background:var(--line)"></span>
+      <button class="btn" id="save">存档</button>
+      <button class="btn" id="load">读档</button>
+      <button class="btn" id="newround">新一轮</button>
+      <input type="file" id="loadfile" accept=".json,application/json" style="display:none">`:""}`;
+  $("pp").onclick = play;
+  $("prev").onclick = ()=>{ stop(); setCursor(S.idx-1); };
+  $("next").onclick = ()=>{ stop(); setCursor(S.idx+1); };
+  $("scrub").oninput = e => { stop(); setCursor(+e.target.value); };
+  $("spd").onclick = ()=> { S.speed = S.speed>=4?1:S.speed*2; renderBar(); };
+  $("allbtn").onclick = ()=>{ S.showAll=!S.showAll; renderBar(); applyCursor(); };
+  if(!LIVE) return;
+  $("save").onclick = saveArchive;
+  $("load").onclick = ()=>$("loadfile").click();
+  $("loadfile").onchange = loadArchive;
+  $("newround").onclick = newRound;
+}
+function applyCursor(){
+  if(!$("fwrap")) return;
+  const msgs = [...$("fwrap").querySelectorAll(".msg[data-i]")];
+  msgs.forEach(n=>{
+    const i = +n.dataset.i;
+    n.classList.toggle("future", !S.showAll && i >= S.idx);
+    n.classList.toggle("cur", i === S.idx-1);
+  });
+  const cur = msgs.find(n=>+n.dataset.i === S.idx-1);
+  const em = cur || msgs.find(n=>+n.dataset.i >= S.idx);
+  if(em){ em.scrollIntoView({block:"center"}); }
+  hotTool((cur && cur.dataset.tool) || null);
+}
+function setCursor(i){
+  S.idx = Math.max(0, Math.min(i, S.events.length));
+  applyCursor();
+  const sc = $("scrub"); if(sc) sc.value = S.idx;
+  const cnt = document.querySelector(".rebar .cnt"); if(cnt) cnt.textContent = `${S.idx} / ${S.events.length} 条`;
+  followScene();
+}
+function currentTool(){
+  for(let j=S.idx-1;j>=0;j--){
+    const p=(S.events[j]&&S.events[j].payload)||{};
+    if(p.tool) return p.tool;
+  }
+  return null;
+}
+function play(){
+  if(S.playing) return stop();
+  if(S.idx>=S.events.length) setCursor(0);
+  S.playing = true; renderBar();
+  const tick = ()=>{
+    if(S.idx>=S.events.length){ stop(); return; }
+    setCursor(S.idx+1);
+  };
+  S.timer = setInterval(tick, 900/S.speed);
+}
+function stop(){
+  S.playing = false; if(S.timer){ clearInterval(S.timer); S.timer=null; }
+  const b=$("pp"); if(b) b.textContent = "▶ 回放";
+}
+
+/* ---------------- 右：画面 / 读写层 / 答案 ---------------- */
+function renderRight(){
+  const r = S.run, has = !!r;
+  const meta = (r&&r.meta)||{};
+  $("right").innerHTML = `
+    <section class="rcard ${S.open.geo?"":"closed"}" data-k="geo">
+      <button><b>几何画面</b><span>${(r&&r.frames&&r.frames.length)?r.frames.length+" 帧":"—"}</span><i>▾</i></button>
+      <div class="body">
+        <div id="shotwrap"><button class="navb l" id="sl">‹</button><img id="shot" alt="scene"><button class="navb r" id="sr">›</button></div>
+        <div class="cap" id="cap"></div><div class="yaws" id="yaws"></div>
+      </div>
+    </section>
+    <section class="rcard ${S.open.io?"":"closed"}" data-k="io">
+      <button><b>读写层</b><span>${has?ioCounts():"—"}</span><i>▾</i></button>
+      <div class="body">
+        <div class="tabs"><button data-tab="read" class="${S.tab==="read"?"on":""}">读层</button>
+          <button data-tab="write" class="${S.tab==="write"?"on":""}">写层</button></div>
+        <div id="iobox">${has?(S.tab==="read"?readSec()||emptyRead():writeSec()||emptyWrite()):emptyAll()}</div>
+      </div>
+    </section>
+    <section class="rcard ${S.open.ans?"":"closed"}" data-k="ans">
+      <button><b>答案</b><span>${has?(Object.keys(((r.result||{}).answer||{}).values||{}).length+" 项"):"—"}</span><i>▾</i></button>
+      <div class="body" id="ansbox">${has?answerHTML():emptyAll()}</div>
+    </section>
+    <div class="rfoot">${has?`账本 ${S.events.length} 条 · ${(r.chain_breaks||[]).length?"链断 "+(r.chain_breaks||[]).length:"哈希链连续"}<br>
+      只读观测：右侧三张卡不触发工具、不改文件。`:""}</div>`;
+  $("right").querySelectorAll(".rcard>button").forEach(b=>b.onclick=()=>{
+    const k = b.parentElement.dataset.k; S.open[k] = !S.open[k];
+    b.parentElement.classList.toggle("closed", !S.open[k]);
+  });
+  $("right").querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
+    S.tab = b.dataset.tab; renderRight();
+  });
+  if(has){ renderShot(); bindAns(); }
+  renderStatus();
+}
+function ioCounts(){
+  const st=(S.run&&S.run.steps)||[];
+  const nRead = st.filter(s=>["section","profile","proj_area","fit_sphere","sphere_region","contact_area","contains","solve_section_height","calc"].includes(s.tool)).length;
+  const nEdit = (S.events||[]).filter(e=>e.kind==="geometry_edited").length;
+  const emits = st.filter(s=>s.tool==="emit").length;
+  return nRead+" 测 / "+nEdit+" 改 / "+emits+" 产物";
+}
+function emptyAll(){ return `<div class="empty">等一轮运行开始后，这里会出现画面、测量与答案。</div>`; }
+function emptyRead(){ return `<div class="empty">这一轮没有读层的反解/拟合类测量。切到「写层」看改动与产物。</div>`; }
+function emptyWrite(){ return `<div class="empty">这一轮没有改几何，也没有产物文件。切到「读层」看测量与判据。</div>`; }
+
+function readSec(){
+  const steps = (S.run&&S.run.steps)||[];
+  const WANT = {
+    section: o=>`面积 <b>${fmt(o.value,4)}</b> m² · ${o.n_rings} 环（内 ${o.n_inner}）`,
+    profile: o=>`高 ${fmt(o.probe_height,4)} 处 面积 <b>${fmt(o.value!=null?o.value:o.area,4)}</b> m² · 内环 ${o.n_inner}`,
+    proj_area: o=>`凸包 <b>${fmt(o.area,4)}</b> m² · 包围盒 ${fmt(o.bbox_area,4)} · 填充 ${fmt(o.fill_ratio,4)}`,
+    fit_sphere: o=>`r = <b>${fmt(o.radius,6)}</b> m · 理想体积 ${fmt(o.ideal_volume,4)} m³ · ${o.n_pts} 点`,
+    sphere_region: o=>`<b>${esc(o.relation)}</b> · 间隙 <b>${fmt(o.signed_gap,4)}</b> m · 内 ${fmt(o.inside_volume,4)}/球 ${fmt(o.sphere_volume,4)}`,
+    contact_area: o=>`<b>${fmt(o.area,4)}</b> m² · ${o.n_pairs} 对共面三角形`,
+    contains: o=>`平面 ${esc(o.plane||"xyz")} · 内 ${o.n_inside}/外 ${o.n_outside} → <b>${o.all_inside?"全在内":"有越界"}</b>`,
+    solve_section_height: o=>`反解 <b>${fmt(o.area,4)}</b> m² → h = <b>${fmt(o.height,6)}</b> m`,
+    calc: o=>`${fmt(o.a,6)} ${esc(o.op)} ${fmt(o.b,6)} = <b>${fmt(o.value,6)}</b> ${esc(o.unit||"")}`,
+  };
+  const picked = steps.filter(s=>WANT[s.tool]);
+  if(!picked.length) return "";
+  const rows = picked.map(s=>{
+    let o=null; try{ o=JSON.parse(s.obs); }catch(e){}
+    if(!o || o.ok===false) return "";
+    let txt=""; try{ txt=WANT[s.tool](o); }catch(e){ return ""; }
+    return `<div class="ln"><i>▪</i><span><code>${esc(s.id)}</code>
+      <span style="color:var(--dim);font-size:10.5px">${esc(s.tool)}</span> · ${txt}</span></div>`;
+  }).join("");
+  if(!rows) return "";
+  return rows + `<div class="rfoot">每个数都能顺着左边时间线点回那次调用；派生量一律由 calc 算出，报告里没有手写算式。</div>`;
+}
+function writeSec(){
+  const steps=(S.run&&S.run.steps)||[];
+  const nEdit=(S.events||[]).filter(e=>e.kind==="geometry_edited").length;
+  const emits=steps.filter(s=>s.tool==="emit");
+  const nReload=(S.events||[]).filter(e=>e.kind==="reloaded_own_output").length;
+  if(!nEdit && !emits.length) return "";
+  const bySid={}, order=[];
+  steps.filter(s=>s.tool==="mesh_health").forEach(s=>{
+    let rows=null; try{ rows=JSON.parse(s.obs).rows; }catch(e){}
+    (rows||[]).forEach(r=>{
+      const sid=r.sid||"?";
+      if(!bySid[sid]){ bySid[sid]=[]; order.push(sid); }
+      bySid[sid].push(r);
+    });
+  });
+  const dim = d => (d&&d.length)?d.map(x=>fmt(x,3)).join("×"):"—";
+  const tail={}; order.forEach(sid=>tail[sid]=bySid[sid][bySid[sid].length-1]);
+  const same=(a,b)=> a&&b&&Math.abs(a.volume-b.volume)<=1e-4 && (a.dims||[]).length===3 &&
+      a.dims.every((x,i)=>Math.abs(x-b.dims[i])<=1e-4);
+  const rows = order.map(sid=>{
+    const h=bySid[sid], a=h[0], b=h[h.length-1];
+    if(h.length<2){
+      const twin=Object.keys(tail).find(k=>k!==sid&&same(tail[k],a));
+      return `<tr><td>${esc(sid)}</td><td>${dim(a.dims)}</td><td>${fmt(a.volume,4)}</td>
+              <td style="font-family:inherit;color:var(--dim)">${twin?"读回一致":"单次"}</td>
+              <td>${a.closed?"封闭":"破洞"}</td></tr>`;
+    }
+    const pct=a.volume?(b.volume-a.volume)/a.volume*100:0;
+    return `<tr><td>${esc(sid)}</td><td>${dim(a.dims)} → ${dim(b.dims)}</td>
+      <td>${fmt(a.volume,4)} → ${fmt(b.volume,4)}</td>
+      <td style="color:${Math.abs(pct)<1e-6?"var(--dim)":"var(--ok)"}">${pct>=0?"+":""}${fmt(pct,2)}%</td>
+      <td>${a.closed&&b.closed?"封闭":"破洞"}</td></tr>`;
+  }).join("");
+  const moves = steps.filter(s=>["collide","sweep_rotate","sweep_translate"].includes(s.tool)).map(s=>{
+    let o=null; try{ o=JSON.parse(s.obs); }catch(e){ return ""; }
+    if(!o) return "";
+    if(s.tool==="collide"){
+      const st=o.overlap?["重叠","var(--warn)"]:(o.contact?["相切","var(--warn)"]:["分离","var(--ok)"]);
+      return `<div class="ln"><i>◆</i><span><code>${esc(s.id)}</code> ${o.n_pairs} 对相交 · 穿刺 ${o.n_pierce} · 深度 ${fmt(o.depth,6)} m →
+        <b style="color:${st[1]}">${st[0]}</b></span></div>`;
+    }
+    if(s.tool==="sweep_rotate")
+      return `<div class="ln"><i>↻</i><span><code>${esc(s.id)}</code> 首次接触 <b>${fmt(o.first_contact_deg,4)}°</b>
+        · 重叠 ${(o.overlap_intervals||[]).map(a=>a.join("–")).join(", ")||"无"} · ${o.n_probes} 位置</span></div>`;
+    return `<div class="ln"><i>↕</i><span><code>${esc(s.id)}</code> 首次接触 ${fmt(o.first_contact_m,4)} m · ${o.n_probes} 位置</span></div>`;
+  }).join("");
+  const files = emits.map(s=>{
+    let path="",bytes=null,n=null;
+    try{ path=JSON.parse(s.args).path||""; }catch(e){}
+    try{ const o=JSON.parse(s.obs); bytes=o.bytes; n=o.n_solids; }catch(e){}
+    return `<div class="ln"><i>▤</i><span><code>${esc(String(path).split(/[\\/]/).pop())}</code>
+      · ${n==null?"—":n} 实体 · ${bytes==null?"—":bytes} B</span></div>`;
+  }).join("");
+  return `<div class="ln ${emits.length?"ok":"bad"}"><i>${emits.length?"✓":"✗"}</i>
+      <span>改了就落盘：${emits.length?"有产物":"改了却没写文件"}</span></div>
+    <div class="ln ${nReload?"ok":"bad"}"><i>${nReload?"✓":"✗"}</i>
+      <span>落盘就读回：${nReload?nReload+" 次读的是自己写出的文件":"没有读回"}</span></div>
+    ${moves?`<div class="ln"><i>◆</i><span><b>运动层</b>：分离 / 相切 / 重叠三分类</span></div>${moves}`:""}
+    ${rows?`<table class="wtab"><tr><th>实体</th><th>尺寸 改前 → 改后</th><th>体积</th><th>变化</th><th>封闭</th></tr>${rows}</table>`:""}
+    ${files}`;
+}
+
+/* ---------------- 右：答案 ---------------- */
+function answerHTML(){
+  const r = S.run;
+  if(!r) return `<div class="empty">还没有这一轮。写一句要求、选一个模型，点「开始解题」。</div>`;
+  const ans=((r.result||{}).answer||{}), vals=ans.values||{};
+  const m = r.meta||{};
+  if(!Object.keys(vals).length){
+    return `<div class="empty">${esc(m.status==="GATE_BLOCKED"?"在 SURVEY 阶段就越界测量，被门控拦下：没有识别角色，也没有答案。"
+      : m.status==="AUDIT_FAILED"?"提交了答案，但数字无法追溯到证据步骤，被审计拒绝 —— 这是要展示的失败面。"
+      : "这一轮没有提交答案（"+(m.status||"—")+"）。")}</div>`;
+  }
+  const rows=[]; const d=vals.distances_m||{}, tg=vals.targets||{};
+  const inv={}; Object.keys(tg).forEach(k=>inv[tg[k]]=k);
+  const isS = v => v==null || typeof v!=="object";
+  const cell = x => x==null?"—":typeof x==="number"?num(x):typeof x==="boolean"?(x?"是":"否"):esc(String(x));
+  function deepVal(v){
+    if(v==null) return "—";
+    if(isS(v)) return typeof v==="number"?num(v):esc(String(v));
+    if(Array.isArray(v)){
+      if(!v.length) return "[]";
+      if(v.every(isS)) return "["+v.map(cell).join(", ")+"]";
+      const cols=Object.keys(v[0]).filter(k=>isS(v[0][k])).slice(0,5);
+      const head=`<tr><th>#</th>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr>`;
+      const body=v.slice(0,5).map((row,i)=>`<tr><td style="color:var(--dim)">${i+1}</td>${cols.map(c=>`<td title="${esc(String(row[c]))}">${cell(row[c])}</td>`).join("")}</tr>`).join("");
+      const more=v.length>5?`<tr><td colspan="${cols.length+1}" style="color:var(--dim)">… 另有 ${v.length-5} 行</td></tr>`:"";
+      return `<table class="wtab">${head}${body}${more}</table>`;
+    }
+    const keys=Object.keys(v);
+    return `<table class="wtab">${keys.slice(0,8).map(k=>{
+      const x=v[k], val=isS(x)?cell(x):Array.isArray(x)?`${x.length} 项`:`${Object.keys(x).length} 个字段`;
+      return `<tr><td style="color:var(--dim)">${esc(k)}</td><td>${val}</td></tr>`;
+    }).join("")}</table>`;
+  }
+  if(Object.keys(d).length){
+    Object.keys(d).forEach(k=>rows.push(
+      `<div class="ansrow" data-v="${d[k]}"><span>${esc((inv[k]||k).replace(/_/g," "))} ↔ chair</span>
+       <span class="v">${fmt(d[k],6)} m <span class="e">追证据</span></span></div>`));
+  } else {
+    Object.keys(vals).forEach(k=>{
+      const v=vals[k], name=k.replace(/_/g," ");
+      if(typeof v==="number")
+        rows.push(`<div class="ansrow" data-v="${num(v)}"><span>${esc(name)}</span>
+          <span class="v">${num(v)} <span class="e">追证据</span></span></div>`);
+      else if(typeof v==="string")
+        rows.push(`<div class="ansblock"><div class="an">${esc(name)}</div>
+          <div class="av"><div class="txt">${esc(v)}</div></div></div>`);
+      else
+        rows.push(`<div class="ansblock"><div class="an">${esc(name)}</div>
+          <div class="av">${deepVal(v)}</div></div>`);
+    });
+    const evs=ans.evidence||[];
+    if(evs.length) rows.push(`<div class="ansrow" style="cursor:default"><span>证据步骤</span>
+      <span class="v" style="font-size:10px">${evs.map(esc).join(" · ")}</span></div>`);
+  }
+  const au=r.result||{}, nOf=v=>Array.isArray(v)?v.length:(typeof v==="number"?v:0);
+  const rej=nOf(au.audit_rejects), gate=nOf(au.gate_rejects), fails=nOf(au.failures);
+  const notes=(S.events||[]).filter(e=>e.kind==="audit_reject").flatMap(e=>(e.payload||{}).problems||[]);
+  return `<div id="ansrows">${rows.join("")}</div>
+    <div style="border-top:1px dashed var(--line);margin-top:7px;padding-top:6px">
+      <div class="ln ${rej?"bad":"ok"}"><i>${rej?"✗":"✓"}</i><span>答案审计：${rej?"拒绝 "+rej+" 次":"通过"}</span></div>
+      ${notes.map(t=>`<div class="ln" style="padding-left:12px"><i>·</i><span>${esc(t)}</span></div>`).join("")}
+      <div class="ln ${gate?"bad":"ok"}"><i>${gate?"✗":"✓"}</i><span>阶段门控：${gate?"越界 "+gate+" 次":"未越界"}</span></div>
+      <div class="ln"><i>·</i><span>失败升级：${fails?fails+" 次（已自救）":"无"}</span></div>
+    </div>`;
+}
+function bindAns(){
+  $("right").querySelectorAll("#ansrows .ansrow").forEach(r=>r.onclick=()=>{
+    const v=r.dataset.v; if(!v) return;
+    const cands=[Number(v).toFixed(6),Number(v).toFixed(4),Number(v).toFixed(3),String(v)];
+    for(const c of cands){
+      const i=S.events.findIndex(e=>e.kind==="tool_call" && JSON.stringify(e.payload||{}).includes(c));
+      if(i>=0){ stop(); setCursor(i+1); return; }
+    }
+  });
+}
+
+/* ---------------- 右：画面 ---------------- */
+function scenes(){
+  const out={};
+  ((S.run&&S.run.frames)||[]).forEach(f=>{ (out[f.scene]=out[f.scene]||[]).push(f); });
+  return out;
+}
+function followScene(){
+  const sc=scenes(), keys=Object.keys(sc).map(Number).sort((a,b)=>a-b);
+  if(!keys.length) return;
+  const st=(S.run&&S.run.steps)||[]; const ord={}; st.forEach((s,i)=>ord[s.id]=i);
+  let sid=null;
+  for(let j=S.idx-1;j>=0&&!sid;j--) sid=((S.events[j]||{}).payload||{}).step||null;
+  if(sid==null || ord[sid]==null) return;
+  let best=keys[0], bestOrd=-2;
+  keys.forEach(k=>{
+    const o=Math.max(-1,...(sc[k]||[]).map(f=>Math.max(-1,...((f.steps||[]).map(s=>ord[s]??-1)))));
+    if(o<=ord[sid] && o>bestOrd){ bestOrd=o; best=k; }
+  });
+  if(best!==S.scene){ S.scene=best; S.orbit=0; renderShot(); }
+}
+function renderShot(){
+  const img=$("shot"); if(!img) return;
+  const sc=scenes(), keys=Object.keys(sc).map(Number).sort((a,b)=>a-b);
+  if(!keys.length){
+    img.removeAttribute("src");
+    $("cap").innerHTML=`<b>还没有画面</b>${S.liveTag?"解题收尾时会生成画面（帧由账本驱动，不是录屏）":"这一轮没有渲染帧"}`;
+    $("yaws").innerHTML=""; return;
+  }
+  if(!sc[S.scene]) S.scene=keys[0];
+  const list=sc[S.scene]||[]; const f=list[S.orbit]||list[0];
+  const meta=$("right").querySelector('[data-k="geo"] span');
+  if(meta) meta.textContent = `${keys.length} 场景 · ${list.length} 视角`;
+  if(!f){ img.removeAttribute("src"); return; }
+  const rel="frames/seq_"+String(f.i).padStart(3,"0")+".png";
+  const inl=(BOOT&&BOOT.frames&&BOOT.frames[S.run.tag]&&BOOT.frames[S.run.tag][String(f.i)])||S.frames[String(f.i)];
+  img.src = inl || (`/frames/${encodeURIComponent(S.run.tag)}/frames/`+encodeURIComponent("seq_"+String(f.i).padStart(3,"0")+".png"));
+  $("cap").innerHTML=`<b>${esc(f.title||"")}</b>${esc(f.caption||"")}`;
+  $("yaws").innerHTML=list.map((x,o)=>`<button class="yaw${o===S.orbit?" on":""}" data-o="${o}">${Math.round(x.yaw)}°</button>`).join("");
+  $("yaws").querySelectorAll(".yaw").forEach(b=>b.onclick=()=>{ S.orbit=+b.dataset.o; renderShot(); });
+  $("sl").onclick=()=>{ const i=keys.indexOf(S.scene); S.scene=keys[(i-1+keys.length)%keys.length]; S.orbit=0; renderShot(); };
+  $("sr").onclick=()=>{ const i=keys.indexOf(S.scene); S.scene=keys[(i+1)%keys.length]; S.orbit=0; renderShot(); };
+}
+
+/* ---------------- 顶栏状态 ---------------- */
+function renderStatus(){
+  const r=S.run, m=(r&&r.meta)||{};
+  const live=S.liveInfo;
+  const status = live && !r ? live.status : (m.status||"ARCHIVE");
+  $("hstat").innerHTML = `
+    ${r?`<span class="pill ${esc(status)}">${esc(status)}</span>
+      <span class="mono" style="font-size:10.5px">${esc(m.turns||"")} 轮 · ${fmt(m.elapsed_s,2)}s · ${S.events.length} 条</span>`
+      : live?`<span class="pill ${esc(status)}">${esc(status)}</span>
+      <span class="mono" style="font-size:10.5px">${live.elapsed_s||0}s · ${live.n||0} 条</span>`
+      : `<span class="pill ARCHIVE">未载入</span>`}
+    ${LIVE?"":`<span class="pill ARCHIVE">快照</span>`}`;
+}
+
+/* ---------------- 存档 / 读档 / 新一轮 ---------------- */
+async function saveArchive(){
+  if(!S.run || !LIVE) return;
+  setNote("正在打包存档（含画面，可能需要几秒）…","");
+  try{
+    const a = await fetch("/api/archive?tag="+encodeURIComponent(S.run.tag)+"&inline=1").then(r=>r.json());
+    const blob = new Blob([JSON.stringify(a)], {type:"application/json"});
+    const url = URL.createObjectURL(blob);
+    const el = document.createElement("a");
+    el.href=url; el.download=`hack26_${S.run.tag}.json`; el.click();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    setNote(`已存档 ${S.run.tag}（${(blob.size/1048576).toFixed(1)} MB，含 ${Object.keys(a.frames||{}).length} 帧）`,"");
+  }catch(e){ setNote("存档失败："+e.message,"bad"); }
+}
+function loadArchive(ev){
+  const f = ev.target.files[0]; if(!f) return;
+  const fr = new FileReader();
+  fr.onload = ()=>{
+    try{
+      const j = JSON.parse(fr.result);
+      if(j.kind !== "hack26.studio.run" || !j.run) throw new Error("不是本实验场的存档（缺少 kind=hack26.studio.run）");
+      stopPolling(); stop();
+      S.run = j.run; S.events = j.run.events||[]; S.frames = j.frames||{};
+      S.archive = true; S.liveTag=null; S.idx=0; S.scene=0; S.orbit=0; S.toolSel=null;
+      renderComposer(); renderRail(); renderFeed(); renderBar(); renderRight(); renderStatus(); setCursor(0);
+      setNote(`已载入存档 ${j.tag}（存档于 ${j.saved_at||"?"}）`,"");
+    }catch(e){ setNote("读档失败："+e.message,"bad"); }
+  };
+  fr.readAsText(f);
+}
+function newRound(){
+  stopPolling(); stop();
+  S.run=null; S.events=[]; S.frames={}; S.liveTag=null; S.since=0; S.liveInfo=null;
+  S.idx=0; S.scene=0; S.orbit=0; S.toolSel=null; S.archive=false;
+  renderComposer(); renderRail(); renderFeed(); renderBar(); renderRight(); renderStatus();
+  const q=$("q"); if(q){ q.value=""; q.focus(); }
+  setNote("新的一轮：写一句要求，或者点上面任一示例题。","");
+}
+
+/* ---------------- 键盘 ---------------- */
+document.addEventListener("keydown", e=>{
+  if(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"||e.target.tagName==="SELECT") return;
+  if(!S.events.length) return;
+  if(e.key===" "){ e.preventDefault(); play(); }
+  else if(e.key==="ArrowRight"){ e.preventDefault(); stop(); setCursor(S.idx+1); }
+  else if(e.key==="ArrowLeft"){ e.preventDefault(); stop(); setCursor(S.idx-1); }
+  else if(e.key==="Home"){ stop(); setCursor(0); }
+  else if(e.key==="End"){ stop(); setCursor(S.events.length); }
+});
+
+/* ---------------- 启动 ---------------- */
+route();
+</script>
+</body>
+</html>

@@ -10,6 +10,8 @@ import math
 
 import numpy as np
 
+from core.runtime import tool
+
 
 def _weld(P, F, tol=1e-5):
     key, idx = {}, []
@@ -190,3 +192,151 @@ def faces(S, sharp_deg=20.0, max_faces=12):
     out.sort(key=lambda f: -f["area"])
     return {"sid": S.sid, "sharp_deg": sharp_deg, "n_regions": k,
             "faces": out[:max_faces], "n_faces": len(out)}
+
+
+# ------------------------------------------------------------ 洞口：面内的缺料
+
+def _cells_covered(us, vs, tris_uv):
+    """把「面内缺料」算出来，而不是靠文件里有没有洞口实体。
+
+    做法：取实体顶点在面内的**所有不同坐标**当作网格线 —— 矩形洞口的边一定落在
+    这些线上，所以这个网格是精确的，不是近似栅格。每个格子取中心点判「是否落在任一个
+    三角面内」，落不进的就是缺料。再把相连的空格连成一块，就是一个个洞口。
+
+    为什么不用包围盒相减：一个洞口贴着地板（门洞）时，墙面多边形是「带缺口的外环」，
+    内环是空的（holes=[]），包围盒差也含别的角料。只有按面覆盖率算，门洞和窗洞才是同一套算法。
+    """
+    nu, nv = len(us) - 1, len(vs) - 1
+    if nu <= 0 or nv <= 0:
+        return np.zeros((0, 0), bool)
+    cu = (us[:-1] + us[1:]) / 2.0
+    cv = (vs[:-1] + vs[1:]) / 2.0
+    U, V = np.meshgrid(cu, cv, indexing="ij")
+    P = np.stack([U.ravel(), V.ravel()], 1)
+    cov = np.zeros(len(P), bool)
+    for a, b, c in tris_uv:
+        v0, v1 = b - a, c - a
+        den = v0[0] * v1[1] - v0[1] * v1[0]
+        if abs(den) < 1e-15:
+            continue
+        w = P - a
+        s = (w[:, 0] * v1[1] - w[:, 1] * v1[0]) / den
+        t = (v0[0] * w[:, 1] - v0[1] * w[:, 0]) / den
+        cov |= (s >= -1e-9) & (t >= -1e-9) & (s + t <= 1 + 1e-9)
+    return cov.reshape(nu, nv)
+
+
+def _components(mask):
+    """四邻接连通块。返回每块的 (i0,i1,j0,j1) 闭区间。"""
+    nu, nv = mask.shape
+    seen = np.zeros_like(mask, bool)
+    out = []
+    for i in range(nu):
+        for j in range(nv):
+            if not mask[i, j] or seen[i, j]:
+                continue
+            stack = [(i, j)]
+            seen[i, j] = True
+            cells = []
+            while stack:
+                a, b = stack.pop()
+                cells.append((a, b))
+                for da, db in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    x, y = a + da, b + db
+                    if 0 <= x < nu and 0 <= y < nv and mask[x, y] and not seen[x, y]:
+                        seen[x, y] = True
+                        stack.append((x, y))
+            ii = [c[0] for c in cells]
+            jj = [c[1] for c in cells]
+            out.append((min(ii), max(ii), min(jj), max(jj)))
+    return out
+
+
+@tool("openings",
+      "找出一块板状构件（墙、板、盖）**面内的缺料**：每个洞口给出中心、宽、高、下沿标高、"
+      "面积，以及下沿是否贴到构件底边（贴底＝门洞式的通底开口）。不依赖文件里有没有洞口实体，"
+      "通底缺口与内环孔洞用同一套算法。",
+      {"sid": "str  构件（通常是一面墙）",
+       "min_area": "float  小于这个面积的缺料忽略（默认 1e-3 m²）"},
+      pre="构件是板状（最短边明显小于另两边），且至少有一个平面主导面",
+      degrade="曲面构件（壳、圆柱面）没有定义良好的面内缺料，会直接报错；"
+              "构件被拆成多块实体时，先 merge 再查",
+      returns="{sid, thickness, axes, wall, openings:[{center, width, height, area, sill_z, "
+              "grounded, touches_top, rect, corners, prism}], n, resolution}",
+      unit="m / m²")
+def t_openings(bus, sid, min_area=1e-3):
+    from tools.shape import _solid_of
+    S = _solid_of(bus, sid)
+    lo, hi = S.bbox()
+    dims = hi - lo
+    k = int(np.argmin(dims))                       # 厚度方向
+    if dims[k] > 0.5 * min(dims[(k + 1) % 3], dims[(k + 2) % 3]):
+        raise ValueError("%s 不是板状构件（三边 %s），面内缺料无从定义"
+                         % (sid, [round(float(d), 3) for d in dims]))
+    rest = [i for i in range(3) if i != k]
+    v = 2 if 2 in rest else rest[int(np.argmax(dims[rest]))]   # 竖直方向
+    u = [i for i in rest if i != v][0]                          # 面内水平方向
+
+    P, F = _weld(S.P, S.F)
+    us = np.unique(np.round(P[:, u], 6))
+    vs = np.unique(np.round(P[:, v], 6))
+    if len(us) * len(vs) > 200000:
+        raise ValueError("顶点坐标组合过多（%d×%d），这个构件不是规整板状，改用 profile 逐高度切"
+                         % (len(us), len(vs)))
+    tris_uv = []
+    for f in F:
+        Q = P[[int(t) for t in f]][:, [u, v]]
+        tris_uv.append((Q[0], Q[1], Q[2]))
+    cov = _cells_covered(us, vs, tris_uv)
+
+    outs = []
+    for i0, i1, j0, j1 in _components(~cov):
+        u0, u1 = float(us[i0]), float(us[i1 + 1])
+        v0, v1 = float(vs[j0]), float(vs[j1 + 1])
+        w, h = u1 - u0, v1 - v0
+        if w * h < min_area:
+            continue
+        c = np.zeros(3)
+        c[u], c[v] = (u0 + u1) / 2.0, (v0 + v1) / 2.0
+        c[k] = float((lo[k] + hi[k]) / 2.0)        # 厚度方向取中面
+        # 洞口矩形的几何：中心、宽高之外，还要给**矩形本身**（四个角点 + 两向单位矢量）。
+        # 只给 center/width/height 时，任何"构件与洞口是什么关系"的判断都得让模型自己做
+        # 加减乘除 —— 那既违反"派生量走 calc"，也会在旋转/换单位后悄悄错位。
+        corners = []
+        for cu, cv in ((u0, v0), (u1, v0), (u1, v1), (u0, v1)):
+            q = np.zeros(3)
+            q[u], q[v], q[k] = cu, cv, c[k]
+            corners.append([round(float(t), 6) for t in q])
+        prism_lo = np.array(lo, float).copy()
+        prism_hi = np.array(hi, float).copy()
+        prism_lo[u], prism_hi[u] = u0, u1
+        prism_lo[v], prism_hi[v] = v0, v1
+        outs.append({
+            "center": [round(float(x), 6) for x in c],
+            "width": round(w, 6),
+            "height": round(h, 6),
+            "area": round(w * h, 6),
+            "sill_z": round(v0 if v == 2 else float(lo[2]), 6),
+            "grounded": bool(abs(v0 - float(lo[v])) <= 1e-6),   # 贴着构件底边
+            "touches_top": bool(abs(v1 - float(hi[v])) <= 1e-6),
+            "rect": {
+                "u_dir": [1.0 if i == u else 0.0 for i in range(3)],
+                "v_dir": [1.0 if i == v else 0.0 for i in range(3)],
+                "n_dir": [1.0 if i == k else 0.0 for i in range(3)],
+                "u_len": round(w, 6), "v_len": round(h, 6),
+                "depth": [round(float(lo[k]), 6), round(float(hi[k]), 6)],
+                "u_range": [round(u0, 6), round(u1, 6)],
+                "v_range": [round(v0, 6), round(v1, 6)],
+            },
+            "corners": corners,
+            # 洞口沿墙厚方向拉伸出的棱柱（世界轴 AABB）：判"构件在不在洞里"直接用它
+            "prism": {"lo": [round(float(x), 6) for x in prism_lo],
+                      "hi": [round(float(x), 6) for x in prism_hi]},
+        })
+    outs.sort(key=lambda o: -o["area"])
+    return {"sid": sid, "thickness": round(float(dims[k]), 6),
+            "axes": {"u": "xyz"[u], "v": "xyz"[v], "n": "xyz"[k]},
+            "wall": {"lo": [round(float(x), 6) for x in lo],
+                     "hi": [round(float(x), 6) for x in hi]},
+            "openings": outs, "n": len(outs),
+            "resolution": "顶点坐标线网格（精确，非栅格）"}

@@ -32,13 +32,19 @@ _KEEP = ("sid", "d0", "d1", "d2", "min_thickness", "z_min", "axis_aligned",
          "skipped", "scale_source", "unit", "note", "notes", "direction", "axis",
          "bbox_lo", "bbox_hi", "ntri", "max_patch_area", "bbox_volume",
          # 包围盒中心：位置判别（哪面墙、哪个洞口）只能靠这三个标量
-         "cx", "cy", "cz", "dims",
+         "cx", "cy", "cz", "dims", "sx", "sy", "sz", "span",
+         # 水平长边落在哪根轴上（h_long_axis / h_long / h_short）
+         "h_long_axis", "h_long", "h_short",
          # 网格体检（mesh_health）：编辑类任务的判据全在这里，少一个字段就等于
          # 让模型在「看不见封闭性」的情况下判断封口成功没有。
          "closed", "watertight", "n_boundary_edges", "n_boundary_loops",
          "n_duplicate_faces", "n_degenerate", "n_nonmanifold_edges",
          "n_flipped_edges", "euler", "surface_area", "signed_volume", "dims",
          "n_vert", "n_tri", "n_used_vert", "note_unused_vert",
+         # 洞口族（assembly）：归属证据一条都不能压掉，否则模型只能看结论、无法复核
+         "families", "members", "rel", "in_prism", "cover_uv", "edge_gap",
+         "spans_wall", "solid_fill", "via", "loose", "prism", "corners",
+         "rect", "u_dir", "v_dir", "n_dir", "u_len", "v_len", "u_range", "v_range", "depth",
          # 编辑与落盘的返回量
          "kept_side", "plane", "stats", "cut", "health_before", "health_after",
          "dangling", "loops", "n_cap_tri", "anchors", "max_shift",
@@ -48,7 +54,54 @@ _KEEP = ("sid", "d0", "d1", "d2", "min_thickness", "z_min", "axis_aligned",
          "center_world", "rect_world_xy", "rect", "center", "size", "grounded",
          "z_min", "z_max", "axis_map", "nearest_on_footprint", "nearest_on_edge",
          "footprint_rect", "edge", "width", "height", "sill_z", "inward_normal",
-         "axis_u", "axis_thin", "wall", "opening", "floor", "rule", "n_tri_checked")
+         "axis_u", "axis_thin", "wall", "opening", "floor", "rule", "n_tri_checked",
+         # 碰撞 / 扫掠（collide.py）。这几个字段是「会不会撞」的全部可观测证据：
+         # 相交对数为 0 才叫分离，depth 超过容差才叫重叠 —— 少了 depth，
+         # 「相切」和「撞进去 2 mm」在观察里长得一模一样。
+         "hit", "contact", "overlap", "n_pairs", "depth", "n_in_a", "n_in_b",
+         "deepest", "closed_a", "closed_b", "tol",
+         "first_contact_deg", "first_contact_n_pairs", "first_overlap_deg",
+         "intervals", "overlap_intervals", "n_probes", "scan_step_deg", "refine_deg",
+         "first_contact_t", "first_contact_m", "intervals_t", "intervals_m",
+         "pivot", "moving", "fixed", "length", "a0", "a1",
+         # 形状分解与配准（shape.py）
+         # thin_ends 的元素是「竖直线」，只留 mid 与边长；少了 mid，两条候选转轴线
+         # 在观察里就是两个空对象 —— 那正是判「哪条远离把手」的唯一依据。
+         "mid", "edge_len",
+         "parent", "parts", "share", "kept_original", "polygon", "sides", "simple",
+         "top", "pockets", "bottom", "size_axes", "rings", "inner", "perimeter",
+         "n_vert", "n_tri", "n_pairs", "angle_deg", "rotation_axis", "translate",
+         # 夹角（angle）：acute_deg 是平面之间的较小夹角，dot 与两根法向一起给，
+         # 少一个模型就会自己取补角，把 65° 报成 115°。
+         "acute_deg", "dot", "n_a", "n_b", "share_a", "share_b",
+         # 洞口（openings）：缺料的矩形、下沿标高、是否通底 —— 门洞与窗洞就是靠这三个量分开的
+         "openings", "touches_top", "resolution",
+         "residual", "rms", "max",
+         # 配准解的平面分量。少了 translate_plane，调用方只能拿到含轴向分量的
+         # 三维平移，一不小心就把「插脚中心搬到槽底」当成水平移动量用掉。
+         "translate_plane", "shift_xy_length", "shift_axis_len", "direction_unit", "turn",
+         # 顶点高度分层（levels）：特征平面靠它找，层高与顶点数一个都不能丢
+         "levels", "h", "level",
+         # 反解与拟合（measure.py）。这几个字段共同回答「这个数是解出来的还是编的」：
+         # 没有 monotonic/crossings，二分给出的高度看起来永远是对的；
+         # 没有 roundness，拟合半径就成了另一条先验。
+         "ok", "error", "radius", "ideal_volume", "ideal_area", "roundness",
+         "hull", "hull_n", "bbox_area", "fill_ratio", "n_points",
+         "monotonic", "crossings", "n_solutions_brackets", "bracket", "samples",
+         "search", "n_iter", "probe_height", "n_inner", "gross", "op",
+         # 区域关系与贴合面积（contact.py）。relation 与 signed_gap 必须成对出现：
+         # 只有距离没有关系名，读的人会把「内切」当「分离」；只有关系名没有体积，
+         # 「整颗在内」与「凸出 1 mm」在观察里没有区别。
+         "relation", "signed_gap", "center_gap", "inside_volume", "outside_volume",
+         "sphere_volume", "ratio", "cap_height", "sphere_center", "box_lo", "box_hi",
+         "min_distance", "max_patch", "normal",
+         # 平面包含（contains.plane）：三维包含会把「坐在地板上的椅子」判成越界，
+         # 不把 plane 与 margin 一起带出来，这个误判在观察里看不出来。
+         "plane", "margins", "margin", "lo_gap", "hi_gap", "all_inside",
+         "n_inside", "n_outside",
+         # 答案里成对呈现的量。配对必须能一眼看出「拿哪个跟哪个比」，
+         # 只剩空对象就等于把配对依据从报告里删掉了。
+         "plug_area", "pocket_area", "plug_sides", "pocket_sides")
 
 # 控制类工具：不进几何总线，由编排层拦截。LLM 用它们表达「阶段推进 / 放弃」。
 CONTROL = [
@@ -127,9 +180,17 @@ def _trim(o, nd=4, in_list=False, depth=0):
     整个删空了 —— 那正是 agent 判断要不要切参照系的关键证据。
     教训：压缩要按「体积来自哪里」下手（长清单），不要按深度一刀切。
     """
-    if depth > 6:
+    # 深度上限 8 而不是 6：截面→simple→thin_ends→元素→mid 这条链正好 7 层，
+    # 6 层会把 mid 压成「…」，于是「两条候选转轴线在哪」在观察里彻底消失。
+    if depth > 8:
         return "…"
     if isinstance(o, float):
+        # 四舍五入会把「穿进去 2.4e-8」和「完全贴合」压成同一个 0.0，
+        # 也会把 1e-6 的容差压成 0。判「相切还是重叠」用的就是这两个数，
+        # 压成 0 之后观察里就只剩「看着像贴上了」，等于没有证据。
+        # 所以只有当这个数会被舍成 0 时才改用科学计数法。
+        if o != 0.0 and round(o, nd) == 0.0:
+            return float("%.2e" % o)
         return round(o, nd)
     if isinstance(o, dict):
         keep = (lambda k: k in _KEEP) if in_list else (lambda k: True)
@@ -137,6 +198,29 @@ def _trim(o, nd=4, in_list=False, depth=0):
     if isinstance(o, list):
         return [_trim(v, nd, isinstance(v, dict), depth + 1) for v in o]
     return o
+
+
+# 观察压缩时优先保留的字段：够回答「几个、多大、落地没有」，不够回答「这是什么」。
+# 后者的信息量大但极占字符（法向簇一条就上百字符），留给按 sid 单独取回。
+# min_thickness 必须带上：d2 是「最短边」，min_thickness 是「板厚」，两者对开着的门扇
+# 差了整整一个量级（0.41 vs 0.04）。只给 d2 时，模型分不清「薄板」和「细长条」，
+# 于是把门套横档当成门扇候选、把贯穿墙厚的洞口盒当成实心块，判据从一开始就歪了。
+_SLIM_KEYS = ("sid", "n", "d0", "d1", "d2", "sx", "sy", "sz", "min_thickness",
+              # h_long_axis / h_long / h_short：水平长边落在哪根轴上。压掉它，
+              # 模型就得自己比 sx 与 sy —— 实测它在旋转过的房间上比反了。
+              "h_long_axis", "h_long", "h_short",
+              "z_min", "axis_aligned")
+
+
+def _slim_rows(rows):
+    """把一串实体指纹压成「一行一个实体」。只在原样塞不下时才用。"""
+    out = []
+    for it in rows:
+        if isinstance(it, dict) and "sid" in it and ("d0" in it or "dims" in it):
+            out.append({k: it[k] for k in _SLIM_KEYS if k in it})
+        else:
+            out.append(it)
+    return out
 
 
 def observe(name, out, max_items=24, max_chars=5200):
@@ -163,7 +247,11 @@ def observe(name, out, max_items=24, max_chars=5200):
             if not isinstance(t[key], list):
                 continue
             total = len(t[key])
-            if total <= max_items:
+            raw_sz = len(json.dumps(t[key], ensure_ascii=False, separators=(",", ":")))
+            # 条数少不等于塞得下：20 个实体各带法向簇与体积，JSON 能到十几 KB。
+            # 只看条数会让它走「整体按字符截断」那条路，截出来的是半截 JSON，
+            # 模型没法用、只能反复重取 —— 实测有一半轮次耗在这上面。
+            if total <= max_items and raw_sz <= max_chars * 0.62:
                 continue
             # 按「字符预算」而不是「条数」截断。按条数截断时，一条紧凑记录和一条巨大记录
             # 代价相同，于是 20 个 150 字符的实体只给看 12 个 —— 模型看不到全貌，就会反复
@@ -177,16 +265,32 @@ def observe(name, out, max_items=24, max_chars=5200):
                 kept.append(it)
                 acc += sz + 1
             if len(kept) < total:
-                t[key] = kept
-                notes.append("%s 只显示了前 %d 条（实际 %d 条）" % (key, len(kept), total))
-                stats.setdefault("truncated", []).append("%s→%d/%d" % (key, len(kept), total))
+                # 截断之前先试一次「投影」：20 个实体的完整指纹塞不下，但一行一个实体的
+                # 三边 + 落地标高塞得下。模型要的是全貌时，给全貌；要某一件的细节时，
+                # 让它按 sid 单独取 —— 比让它反复重读同一个被截断的清单好。
+                slim = _slim_rows(t[key])
+                ssz = sum(len(json.dumps(it, ensure_ascii=False, separators=(",", ":")))
+                          for it in slim)
+                if ssz <= max_chars * 0.62:
+                    t[key] = slim
+                    notes.append("%s 有 %d 条，已压成一行一个实体（只留 %s）"
+                                 % (key, total, "/".join(_SLIM_KEYS)))
+                    stats.setdefault("slim", []).append("%s×%d" % (key, total))
+                else:
+                    t[key] = kept
+                    notes.append("%s 只显示了前 %d 条（实际 %d 条）" % (key, len(kept), total))
+                    stats.setdefault("truncated", []).append("%s→%d/%d" % (key, len(kept), total))
         if notes:
             # 截断必须写进观察本身。只把它记在 stats 里，模型会看到 n=20 却只有 8 条，
             # 于是合理地怀疑数据有问题，然后反复重读同一个工具直到停滞 —— 实测确实发生过。
             # 上下文管理器对自己被压缩这件事必须诚实，否则模型的所有推理都建立在一个假前提上。
-            t["_truncated"] = ("；".join(notes) +
-                               "。需要完整集合时用 select 按条件收窄，或按 sid 重新查询，"
-                               "不要重复调用同一工具。")
+            slimmed_only = bool(stats.get("slim")) and not stats.get("truncated")
+            tail = ("。条数是完整的，只是字段少了；要某一件的完整指纹（法向簇/体积/覆盖）"
+                    "用 select 带 where 按 sid 取回，不要重复调用同一工具。"
+                    if slimmed_only else
+                    "。需要完整集合时用 select 按条件收窄，或按 sid 重新查询，"
+                    "不要重复调用同一工具。")
+            t["_truncated"] = "；".join(notes) + tail
     s = json.dumps(t, ensure_ascii=False, separators=(",", ":"))
     if len(s) > max_chars:
         s = s[:max_chars] + "…（已截断 %d 字符；完整内容在账本里）" % (len(s) - max_chars)

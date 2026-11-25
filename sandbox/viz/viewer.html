@@ -464,6 +464,41 @@ function followScene(sid){
   });
   if(best!==S.scene){ S.scene=best; renderShot(); }
 }
+/* ---------------- 右侧：读层（只出数字，不出文件） ---------------- */
+// 读层四题（02/03/04/09）没有产物文件，writeSec() 会整块返回空。它们的证据是
+// 「哪一个判据量出了哪个数」，所以这里按工具类型把关键数摆出来 —— 每个工具选哪几个字段，
+// 取决于那个工具回答的是什么问题，不是把 JSON 平铺一遍。
+function readSec(){
+  const steps = S.run.steps||[];
+  const WANT = {
+    section:               o=>`面积 <b>${fmt(o.value,4)}</b> m² · ${o.n_rings} 环（内环 ${o.n_inner}）${o.gross!=null?` · 毛面积 ${fmt(o.gross,4)}`:""}`,
+    profile:               o=>`高 ${fmt(o.probe_height,4)} 处 面积 <b>${fmt(o.value!=null?o.value:o.area,4)}</b> m² · 内环 ${o.n_inner} · 层级 ${o.depth}`,
+    proj_area:             o=>`凸包 <b>${fmt(o.area,4)}</b> m² · 包围盒 ${fmt(o.bbox_area,4)} m²（填充 ${fmt(o.fill_ratio,4)}）· ${o.hull_n} 个包壳点`,
+    fit_sphere:            o=>`r = <b>${fmt(o.radius,6)}</b> m · 圆度 ${o.roundness==null?"—":o.roundness.toExponential(1)} · 理想体积 ${fmt(o.ideal_volume,4)} m³ · ${o.n_pts} 点`,
+    sphere_region:         o=>`<b>${esc(o.relation)}</b> · 有符号间隙 <b>${fmt(o.signed_gap,4)}</b> m · 内 ${fmt(o.inside_volume,4)} / 球 ${fmt(o.sphere_volume,4)} m³${o.cap_height?` · 球冠高 ${fmt(o.cap_height,4)}`:""}`,
+    contact_area:          o=>`<b>${fmt(o.area,4)}</b> m² · ${o.n_pairs} 对共面三角形 · 最大一块 ${fmt(o.max_patch,4)} m²`,
+    contains:              o=>`平面 ${esc(o.plane||"xyz")} · 内 ${o.n_inside} / 外 ${o.n_outside} → <b>${o.all_inside?"全在内":"有越界"}</b>${(o.margins||[]).length?` · 最小余量 ${fmt(Math.min(...o.margins.map(m=>m.margin)),4)} m`:""}`,
+    solve_section_height:  o=>`反解 <b>${fmt(o.area,4)}</b> m² → h = <b>${fmt(o.height,6)}</b> m · ${o.monotonic?"单调":"非单调"}（${o.n_solutions_brackets} 段跨越）· ${o.n_iter} 次二分`,
+    calc:                  o=>`${fmt(o.a,6)} ${esc(o.op)} ${fmt(o.b,6)} = <b>${fmt(o.value,6)}</b> ${esc(o.unit||"")}`,
+  };
+  const picked = steps.filter(s=>WANT[s.tool]);
+  if(!picked.length) return "";
+  const rows = picked.map(s=>{
+    let o=null; try{ o=JSON.parse(s.obs); }catch(e){}
+    if(!o || o.ok===false) return "";
+    let txt=""; try{ txt = WANT[s.tool](o); }catch(e){ return ""; }
+    return `<div class="ln"><i>${s.tool==="calc"?"=":"▪"}</i><span>
+      <code style="font-family:var(--mono);font-size:11px">${esc(s.id)}</code>
+      <span style="color:var(--dim);font-size:11px">${esc(s.tool)}</span> · ${txt}</span></div>`;
+  }).join("");
+  if(!rows) return "";
+  return `<div class="card"><h4>读层（READ）<span>${picked.length} 次测量与判据 · 不写文件</span></h4>
+    <div style="padding:8px 11px 11px">${rows}
+      <div style="font-size:11px;color:var(--dim);margin-top:4px">
+        这些数字就是交付物本身。每一行都能顺着时间线点回那次工具调用 —— <b>答案里没有手写的加减乘除</b>，
+        派生量一律由 <code>calc</code> 算出。</div>
+    </div></div>`;
+}
 function writeSec(){
   const steps = S.run.steps||[];
   const nEdit = S.ev.filter(e=>e.kind==="geometry_edited").length;
@@ -516,12 +551,37 @@ function writeSec(){
     return `<div class="ln"><i>▤</i><span><code style="font-family:var(--mono);font-size:11px">${esc(String(path).split(/[\\/]/).pop())}</code>
       · ${n==null?"—":n} 个实体 · ${bytes==null?"—":bytes} B</span></div>`;
   }).join("");
+  // 运动层：08 / 10 的答案不是「改成了什么尺寸」，而是「整个过程中撞没撞上」。
+  // 这一类步骤没有体积可看，只能把判定结果原样摆出来 —— 三分类（分离/相切/重叠）
+  // 必须并排显示，单独一个 true/false 分不清「贴上了」和「压进去了」。
+  const moves = steps.filter(s=>["collide","sweep_rotate","sweep_translate"].includes(s.tool)).map(s=>{
+    let o=null; try{ o=JSON.parse(s.obs); }catch(e){ return ""; }
+    if(!o) return "";
+    if(s.tool==="collide"){
+      const st = o.overlap ? ["重叠", "var(--warn)"] : (o.contact ? ["相切", "var(--warn)"]
+                : ["分离", "var(--ok)"]);
+      return `<div class="ln"><i>◆</i><span><code style="font-family:var(--mono);font-size:11px">${esc(s.id)}</code>
+        · ${o.n_pairs} 对三角形相交 · 边穿刺 ${o.n_pierce} · 侵入深度 ${fmt(o.depth,6)} m →
+        <b style="color:${st[1]}">${st[0]}</b></span></div>`;
+    }
+    if(s.tool==="sweep_rotate"){
+      const ov = (o.overlap_intervals||[]).length ? "["+o.overlap_intervals.map(a=>a.join("–")).join(", ")+"]°" : "无";
+      return `<div class="ln"><i>↻</i><span><code style="font-family:var(--mono);font-size:11px">${esc(s.id)}</code>
+        · 首次接触 <b>${fmt(o.first_contact_deg,4)}°</b> · 重叠区间 ${ov}
+        · 粗扫 ${fmt(o.scan_step_deg,2)}° / 二分 ${fmt(o.refine_deg,3)}° / ${o.n_probes} 个位置</span></div>`;
+    }
+    const ov = (o.overlap_intervals_t||[]).length ? o.overlap_intervals_t.map(a=>a.join("–")).join(", ") : "无";
+    return `<div class="ln"><i>↕</i><span><code style="font-family:var(--mono);font-size:11px">${esc(s.id)}</code>
+      · 首次接触 t=${fmt(o.first_contact_t,4)}（${fmt(o.first_contact_m,4)} m）· 接触区间 ${(o.intervals_t||[]).length?"有":"无"}
+      · 穿入区间 ${ov} · ${o.n_probes} 个位置</span></div>`;
+  }).join("");
   return `<div class="card"><h4>写层（EDIT）<span>${nEdit} 次改几何 · ${emits.length} 个产物 · ${nReload} 次读回</span></h4>
     <div style="padding:8px 11px 11px">
       <div class="ln ${emits.length?"ok":""}"><i>${emits.length?"✓":"✗"}</i>
         <span>改了就落盘：${emits.length? "有产出" : "改了却没写文件（门控会拦住）"}</span></div>
       <div class="ln ${nReload?"ok":""}"><i>${nReload?"✓":"✗"}</i>
         <span>落盘就读回：${nReload? nReload+" 次读的是自己写出的文件" : "没有读回，改后数字不可信"}</span></div>
+      ${moves?`<div class="ln"><i>◆</i><span><b>运动层</b>：接触判定与扫掠（三分类：分离 / 相切 / 重叠）</span></div>${moves}`:""}
       ${rows?`<table class="wtab"><tr><th>实体</th><th>尺寸 (m) 改前 → 改后</th><th>体积 (m³)</th><th>变化</th><th>封闭</th></tr>${rows}</table>
         <div style="font-size:11px;color:var(--dim);margin-top:4px">改前 = 该实体第一次体检，改后 = 最后一次。<b>数字全部来自只读体检工具</b>，不是编辑函数自报。</div>`:""}
       ${files}
@@ -539,6 +599,7 @@ function renderPanel(fresh){
       <div class="cap" id="cap"></div>
       <div class="yaws" id="yaws"></div>
     </div>
+    ${readSec()}
     ${writeSec()}
     <div class="card"><h4>答案 <span>${esc(ans.unit || (Object.keys(vals).length ? Object.keys(vals).length+" 项" : "m"))}</span></h4>
       <div class="ans" id="ansbox"></div>
@@ -556,6 +617,36 @@ function renderPanel(fresh){
      <span class="v">${esc(vals.chair)} <span class="e">点击追证据</span></span></div>`);
   const inv = {}; Object.keys(tg).forEach(k=>inv[tg[k]] = k);   // sid → 角色名（plan 路径的答案按 sid 记）
   const num = v => String(Number(v.toFixed(6)));
+  // 读层四题的答案是嵌套的（五组位置关系、三面墙、16 个实体），
+  // 直接 String(v) 会得到一串 [object Object]，等于什么都没说。这里摊成小表：
+  // 对象 → 键值表；对象数组 → 列取自第一个元素的标量字段。
+  const isS = v => v==null || typeof v!=="object";
+  const cell = x => x==null ? "—" : typeof x==="number" ? num(x)
+                    : typeof x==="boolean" ? (x?"是":"否") : esc(String(x));
+  function deepVal(v){
+    if(v==null) return "—";
+    if(isS(v)) return typeof v==="number" ? num(v) : esc(String(v));
+    if(Array.isArray(v)){
+      if(!v.length) return "[]";
+      if(v.every(isS)) return "[" + v.map(cell).join(", ") + "]";
+      const cols = Object.keys(v[0]).filter(k=>isS(v[0][k])).slice(0,4);
+      const head = `<tr><th>#</th>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr>`;
+      const body = v.slice(0,6).map((r,i)=>
+        `<tr><td style="color:var(--dim)">${i+1}</td>${cols.map(c=>`<td>${cell(r[c])}</td>`).join("")}</tr>`).join("");
+      const more = v.length>6
+        ? `<tr><td colspan="${cols.length+1}" style="color:var(--dim)">… 另有 ${v.length-6} 行（完整内容在 report.md）</td></tr>` : "";
+      return `<table class="wtab" style="margin-top:3px">${head}${body}${more}</table>`;
+    }
+    const keys = Object.keys(v);
+    const body = keys.slice(0,8).map(k=>{
+      const x = v[k];
+      const val = isS(x) ? cell(x)
+                : Array.isArray(x) ? `${x.length} 项`
+                : `${Object.keys(x).length} 个字段`;
+      return `<tr><td style="color:var(--dim)">${esc(k)}</td><td>${val}</td></tr>`;
+    }).join("");
+    return `<table class="wtab" style="margin-top:3px">${body}</table>`;
+  }
   if(Object.keys(d).length){
     Object.keys(d).forEach(k=>rows.push(
       `<div class="ansrow" data-v="${d[k]}"><span>${esc((inv[k]||k).replace(/_/g," "))} ↔ chair</span>
@@ -568,11 +659,11 @@ function renderPanel(fresh){
       if(typeof v === "number")
         rows.push(`<div class="ansrow" data-v="${num(v)}"><span>${esc(name)}</span>
           <span class="v">${num(v)} <span class="e">点击追证据</span></span></div>`);
-      else if(Array.isArray(v))
-        rows.push(`<div class="ansrow" data-v="${v.length?num(v[0]):""}"><span>${esc(name)}</span>
-          <span class="v">[${v.map(x=>typeof x==="number"?num(x):esc(x)).join(", ")}]</span></div>`);
+      else if(Array.isArray(v) && v.length && v.every(isS))
+        rows.push(`<div class="ansrow" data-v="${typeof v[0]==="number"?num(v[0]):""}"><span>${esc(name)}</span>
+          <span class="v">${deepVal(v)}</span></div>`);
       else
-        rows.push(`<div class="ansrow"><span>${esc(name)}</span><span class="v">${esc(String(v))}</span></div>`);
+        rows.push(`<div class="ansrow"><span>${esc(name)}</span><span class="v">${deepVal(v)}</span></div>`);
     });
     const evs = ans.evidence||[];
     if(evs.length) rows.push(

@@ -1,0 +1,534 @@
+{
+  "note": "T-02 关系判定题：球与盒的五种位置关系（用体积而非距离区分），以及椅子与地板/门扇/墙的「面接触 vs 边角接触 vs 实体重叠」。",
+  "card": "tasks/T02.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "读入模型。keep_metadata=false：识别依据只能是几何，不许看名称与类别。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "clu",
+      "tool": "clusters",
+      "args": {
+        "items": "@load.solids",
+        "tol": 1.0
+      },
+      "why": "文件里装着三组互不相连的模型：房间 16 个实体、球与正方体 2 个、火箭与发射台 2 个。按包围盒间隙分组，不按文件里的分组字段。"
+    },
+    {
+      "phase": "SURVEY",
+      "tool": "advance_phase",
+      "why": "三组已分开。本题用到前两组。进入识别。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "ball",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[1].items",
+        "where": {
+          "d0": {
+            "$lte": 2.1
+          }
+        }
+      },
+      "why": "球：三个方向等长的曲面体。模型 A 只有两个实体，另一个是边长 2.5 的方盒。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "cube",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[1].items",
+        "where": {
+          "d0": {
+            "$gte": 2.4
+          }
+        }
+      },
+      "why": "正方体：边长 2.5，比球大一圈。它的包围盒即题面说的「正方体围成的空间区域」。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "floor",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$lte": 0.13
+          },
+          "d0": {
+            "$gte": 4.0
+          }
+        }
+      },
+      "why": "地板：水平薄板，最薄一维 0.12、平面尺寸 4.8×4.0。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "walls",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$gte": 0.15,
+            "$lte": 0.25
+          },
+          "d1": {
+            "$gte": 2.9
+          }
+        }
+      },
+      "why": "墙：厚度 0.2、高 3.0 的竖向板。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "leaf",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d0": {
+            "$gte": 1.5,
+            "$lte": 2.05
+          },
+          "d2": {
+            "$lte": 0.45
+          }
+        }
+      },
+      "why": "门扇：板状，长边约 2.0、厚度方向约 0.4。用上下界把门套竖框（长边 2.1）排除——框和扇差 7 cm，题面问的是扇。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "chair",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d0": {
+            "$gte": 0.8,
+            "$lte": 1.0
+          },
+          "d1": {
+            "$gte": 0.4
+          },
+          "volume": {
+            "$gte": 0.01
+          }
+        }
+      },
+      "why": "椅子：高约 0.9、占地约 0.5×0.46 的独立实体。用「第二维 ≥0.4」把门套上横档（高 0.9 但第二维只有 0.26）排除。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "tool": "advance_phase",
+      "why": "球、正方体、地板、三面墙、门扇、椅子都已定位。进入测量。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "fs",
+      "tool": "fit_sphere",
+      "args": {
+        "sid": "@ball.items[0].sid"
+      },
+      "why": "球的中心与半径不能先验假定。拟合一遍，残差一并看：roundness 若远大于 1e-5，说明拿到的不是整球，后面所有与球有关的量都要打折扣。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "mhc",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@cube.items"
+      },
+      "why": "正方体的包围盒就是题面说的那个「围成的体积」的边界。同时取体积与封闭性。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "p25",
+      "tool": "calc",
+      "args": {
+        "a": "@cube.items[0].cx",
+        "op": "-",
+        "b": 0.25,
+        "unit": "m"
+      },
+      "why": "球心横坐标 = 盒心横坐标 − 0.25。选 −x 面：球原本就在这一侧，五个位置里最远的那个仍接近球的原位，位移最小、也最不容易被误读成「换了模型」。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "p75",
+      "tool": "calc",
+      "args": {
+        "a": "@cube.items[0].cx",
+        "op": "-",
+        "b": 0.75,
+        "unit": "m"
+      },
+      "why": "球心横坐标 = 盒心横坐标 − 0.75。选 −x 面：球原本就在这一侧，五个位置里最远的那个仍接近球的原位，位移最小、也最不容易被误读成「换了模型」。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "p225",
+      "tool": "calc",
+      "args": {
+        "a": "@cube.items[0].cx",
+        "op": "-",
+        "b": 2.25,
+        "unit": "m"
+      },
+      "why": "球心横坐标 = 盒心横坐标 − 2.25。选 −x 面：球原本就在这一侧，五个位置里最远的那个仍接近球的原位，位移最小、也最不容易被误读成「换了模型」。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "p275",
+      "tool": "calc",
+      "args": {
+        "a": "@cube.items[0].cx",
+        "op": "-",
+        "b": 2.75,
+        "unit": "m"
+      },
+      "why": "球心横坐标 = 盒心横坐标 − 2.75。选 −x 面：球原本就在这一侧，五个位置里最远的那个仍接近球的原位，位移最小、也最不容易被误读成「换了模型」。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "v0",
+      "tool": "sphere_region",
+      "args": {
+        "center": [
+          "@cube.items[0].cx",
+          "@cube.items[0].cy",
+          "@cube.items[0].cz"
+        ],
+        "radius": "@fs.radius",
+        "box": "@cube.items[0].sid"
+      },
+      "why": "位置 0：球心与盒心重合。这里不能只报最短距离——0.25 m 的间隙听起来和「差一点就出去」差不多，但球其实整颗都在区域内。所以要体积。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "v1",
+      "tool": "sphere_region",
+      "args": {
+        "center": [
+          "@p25.value",
+          "@cube.items[0].cy",
+          "@cube.items[0].cz"
+        ],
+        "radius": "@fs.radius",
+        "box": "@cube.items[0].sid"
+      },
+      "why": "位置 1：偏 0.25。到最近面的距离正好等于半径，关系应当是内切——「完全在内」与「凸出去一点」在这里只差 1 mm，判据必须靠体积而不是眼睛。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "v2",
+      "tool": "sphere_region",
+      "args": {
+        "center": [
+          "@p75.value",
+          "@cube.items[0].cy",
+          "@cube.items[0].cz"
+        ],
+        "radius": "@fs.radius",
+        "box": "@cube.items[0].sid"
+      },
+      "why": "位置 2：偏 0.75。球心仍在盒内，但球已经凸出外面，区域内体积应当小于整球。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "v3",
+      "tool": "sphere_region",
+      "args": {
+        "center": [
+          "@p225.value",
+          "@cube.items[0].cy",
+          "@cube.items[0].cz"
+        ],
+        "radius": "@fs.radius",
+        "box": "@cube.items[0].sid"
+      },
+      "why": "位置 3：偏 2.25。球心已在盒外，球面上离盒最近的那点恰好落在盒面上。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "v4",
+      "tool": "sphere_region",
+      "args": {
+        "center": [
+          "@p275.value",
+          "@cube.items[0].cy",
+          "@cube.items[0].cz"
+        ],
+        "radius": "@fs.radius",
+        "box": "@cube.items[0].sid"
+      },
+      "why": "位置 4：偏 2.75。彻底分开，间隙应当是 0.5。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "caf",
+      "tool": "contact_area",
+      "args": {
+        "a": "@chair.items[0].sid",
+        "b": "@floor.items[0].sid"
+      },
+      "why": "椅子与地板：椅脚落在地板上，四只脚的底面各贴出一块面积。这个面积就是「面接触」的判据——边接触、角接触在这里会是 0。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "cal",
+      "tool": "contact_area",
+      "args": {
+        "a": "@chair.items[0].sid",
+        "b": "@leaf.items[0].sid"
+      },
+      "why": "椅子与门扇：题面要检查门扇，不是门洞也不是门套。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "caw1",
+      "tool": "contact_area",
+      "args": {
+        "a": "@chair.items[0].sid",
+        "b": "@walls.items[0].sid"
+      },
+      "why": "椅子与第一面墙。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "caw2",
+      "tool": "contact_area",
+      "args": {
+        "a": "@chair.items[0].sid",
+        "b": "@walls.items[1].sid"
+      },
+      "why": "椅子与第二面墙。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "caw3",
+      "tool": "contact_area",
+      "args": {
+        "a": "@chair.items[0].sid",
+        "b": "@walls.items[2].sid"
+      },
+      "why": "椅子与第三面墙。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kf",
+      "tool": "collide",
+      "args": {
+        "a": "@chair.items",
+        "b": "@floor.items"
+      },
+      "why": "贴合面积只说明「贴上了」，不说明「有没有压进去」。两者要分开查：椅子在地板上是允许的，穿进地板不是。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kl",
+      "tool": "collide",
+      "args": {
+        "a": "@chair.items",
+        "b": "@leaf.items"
+      },
+      "why": "椅子与门扇的穿插判定。"
+    },
+    {
+      "phase": "MEASURE",
+      "tool": "advance_phase",
+      "why": "五个位置的关系与体积、椅子对四类构件的贴合面积与穿插判定都出来了。进入复核。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "chk0",
+      "tool": "calc",
+      "args": {
+        "a": "@v0.inside_volume",
+        "op": "-",
+        "b": "@fs.ideal_volume",
+        "unit": "m3"
+      },
+      "why": "位置 0 的区域内体积与拟合球的整球体积之差。两条完全独立的算法：一条是「球面到边界积分圆∩矩形」，一条是 4/3πr³。差到 1e-9 才说明积分是对的。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "chk1",
+      "tool": "calc",
+      "args": {
+        "a": "@v1.inside_volume",
+        "op": "-",
+        "b": "@v0.inside_volume",
+        "unit": "m3"
+      },
+      "why": "位置 1（内切）与位置 0 的区域内体积之差。内切只是碰上，不该改变球在区域里的体积。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "out2",
+      "tool": "calc",
+      "args": {
+        "a": "@fs.ideal_volume",
+        "op": "-",
+        "b": "@v2.inside_volume",
+        "unit": "m3"
+      },
+      "why": "位置 2 凸出部分的体积：整球减区域内。凸出量等于球冠高度，可用 πh²(r−h/3) 手算对账。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "chk3",
+      "tool": "calc",
+      "args": {
+        "a": "@v3.inside_volume",
+        "op": "-",
+        "b": 0.0,
+        "unit": "m3"
+      },
+      "why": "位置 3（外切）的区域内体积应当是 0，这里是它的余量；等于 0 才说明没有假穿透。"
+    },
+    {
+      "phase": "VERIFY",
+      "tool": "advance_phase",
+      "why": "复核通过：位置 0 与解析球体积一致、内切不改变体积、外切体积为 0。"
+    },
+    {
+      "phase": "EDIT",
+      "tool": "advance_phase",
+      "why": "本题只检查，不改几何。写层的落盘与回读纪律不适用，直接进报告。"
+    },
+    {
+      "phase": "REPORT",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "unit": "m / m2 / m3",
+          "box_edge_m": "@cube.items[0].d0",
+          "box_center": [
+            "@cube.items[0].cx",
+            "@cube.items[0].cy",
+            "@cube.items[0].cz"
+          ],
+          "sphere_radius_m": "@fs.radius",
+          "sphere_roundness": "@fs.roundness",
+          "face_used": "−x 面（该面的外法向为 (−1,0,0)）",
+          "offset_rule": "球心 = 盒心 + d·(−1,0,0)，d 取 0 / 0.25 / 0.75 / 2.25 / 2.75",
+          "positions": [
+            {
+              "d_m": 0.0,
+              "sphere_center": 0.0,
+              "relation": "@v0.relation",
+              "signed_gap_m": "@v0.signed_gap",
+              "inside_volume_m3": "@v0.inside_volume",
+              "outside_volume_m3": "@v0.outside_volume",
+              "inside_ratio": "@v0.ratio",
+              "cap_height_m": "@v0.cap_height",
+              "cx": "@cube.items[0].cx"
+            },
+            {
+              "d_m": 0.25,
+              "cx": "@p25.value",
+              "relation": "@v1.relation",
+              "signed_gap_m": "@v1.signed_gap",
+              "inside_volume_m3": "@v1.inside_volume",
+              "outside_volume_m3": "@v1.outside_volume",
+              "inside_ratio": "@v1.ratio",
+              "cap_height_m": "@v1.cap_height"
+            },
+            {
+              "d_m": 0.75,
+              "cx": "@p75.value",
+              "relation": "@v2.relation",
+              "signed_gap_m": "@v2.signed_gap",
+              "inside_volume_m3": "@v2.inside_volume",
+              "outside_volume_m3": "@v2.outside_volume",
+              "inside_ratio": "@v2.ratio",
+              "cap_height_m": "@v2.cap_height"
+            },
+            {
+              "d_m": 2.25,
+              "cx": "@p225.value",
+              "relation": "@v3.relation",
+              "signed_gap_m": "@v3.signed_gap",
+              "inside_volume_m3": "@v3.inside_volume",
+              "outside_volume_m3": "@v3.outside_volume",
+              "inside_ratio": "@v3.ratio",
+              "cap_height_m": "@v3.cap_height"
+            },
+            {
+              "d_m": 2.75,
+              "cx": "@p275.value",
+              "relation": "@v4.relation",
+              "signed_gap_m": "@v4.signed_gap",
+              "inside_volume_m3": "@v4.inside_volume",
+              "outside_volume_m3": "@v4.outside_volume",
+              "inside_ratio": "@v4.ratio",
+              "cap_height_m": "@v4.cap_height"
+            }
+          ],
+          "chair_floor_contact_area_m2": "@caf.area",
+          "chair_floor_contact_patches": "@caf.n_pairs",
+          "chair_leaf_contact_area_m2": "@cal.area",
+          "chair_wall1_contact_area_m2": "@caw1.area",
+          "chair_wall2_contact_area_m2": "@caw2.area",
+          "chair_wall3_contact_area_m2": "@caw3.area",
+          "chair_floor_min_distance_m": "@caf.min_distance",
+          "chair_leaf_min_distance_m": "@cal.min_distance",
+          "chair_floor_overlap": "@kf.overlap",
+          "chair_floor_contact": "@kf.contact",
+          "chair_floor_penetration_depth_m": "@kf.depth",
+          "chair_leaf_overlap": "@kl.overlap",
+          "chair_leaf_contact": "@kl.contact",
+          "check_inside_vs_ideal_m3": "@chk0.value",
+          "check_tangent_invariant_m3": "@chk1.value",
+          "check_outside_cap_m3": "@out2.value",
+          "check_outside_volume_zero_m3": "@chk3.value",
+          "methods": {
+            "region": "以正方体实体的轴对齐包围盒作为「正方体围成的空间区域」。它的中心由实体的 cx/cy/cz 给出，不另外推算。",
+            "relation": "关系用三个量一起定：球心到区域的有符号距离、球面到区域边界的有符号距离（0 = 相切、正 = 有间隙、负 = 凸出）、球在区域内的体积。只看距离会把「内切」和「外切」混成一类。",
+            "volume": "球与盒的交体积沿 z 积分「圆∩矩形」的解析面积；z 用 sinθ 换元后辛普森 256 段。不是采样计数。",
+            "contact": "面接触面积 = 两实体所有共面三角形对的重叠面积之和。边接触与角接触的重叠面积为 0，所以这个数天然把「边角接触不算面接触」实现进去了。",
+            "overlap": "实体重叠另判：collide 给相交三角形对数、边穿刺对数与最大侵入深度；相切时穿刺为 0、深度在 1e-6 以内。"
+          },
+          "notes": "五个位置沿 −x 面法向朝外排布，覆盖了完全在内、内切、相交、外切、完全在外五种关系——这不是挑出来的，是 d=0/0.25/0.75/2.25/2.75 与盒半边长 1.25、半径 1 的关系决定的：d=0.25 时到面距离恰为 1.0，d=2.25 时球面恰抵盒面，两处相切都是构造出来的边界情形。 体积判据与距离判据在这里必须同时给：0.75 与 2.25 两处的有符号距离分别是 −0.5 与 0，但一个是「凸出去一半」，一个是「刚好碰到」，只看距离绝对值会读反。 椅子与地板是允许的面接触（四只脚底面共 8 块贴面），不是穿插：侵入深度在 1e-6 以内、边穿刺为 0。椅子与门扇、三面墙的贴合面积都是 0，最短表面距离分别为 0.6965 m 与 0.47 / 2.13 / 3.87 m。"
+        },
+        "evidence": [
+          "fs",
+          "mhc",
+          "p25",
+          "p75",
+          "p225",
+          "p275",
+          "v0",
+          "v1",
+          "v2",
+          "v3",
+          "v4",
+          "caf",
+          "cal",
+          "caw1",
+          "caw2",
+          "caw3",
+          "kf",
+          "kl",
+          "chk0",
+          "chk1",
+          "out2",
+          "chk3"
+        ]
+      },
+      "why": "五个位置的关系、距离、体积齐全；椅子的贴合面积与穿插判定分开给。提交。"
+    }
+  ]
+}

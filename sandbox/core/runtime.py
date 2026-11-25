@@ -96,6 +96,13 @@ class Bus:
     def __init__(self, ledger, scene=None):
         self.ledger = ledger
         self.scene = scene or []
+        # 场景代号：每次整体换场景/替换实体就 +1。指纹缓存把它算进键里 —— 只靠 id(S)
+        # 不行：load 之后旧 Solid 被回收，新 Solid 可能**拿到同一个 id**，缓存于是返回
+        # 上一个模型的指纹（实测：同进程里连读两个模型，第二个模型的椅子拿到了第一个的坐标）。
+        self.gen = 0
+
+    def touch(self):
+        self.gen += 1
 
     # --- 引用解析：@step.field[3].k ---
     def resolve(self, obj, results):
@@ -119,6 +126,12 @@ class Bus:
                 if not part:
                     continue
                 if isinstance(cur, dict):
+                    if part not in cur:
+                        # 说清楚「这个步骤的返回里到底有哪些字段」。只报 KeyError: 'solids'
+                        # 时模型会换个同义词再试一次，把轮次耗在猜字段名上。
+                        keys = [k for k in cur if not str(k).startswith("_")]
+                        raise KeyError("%s 在 %r 处不存在；该步骤返回的字段是 %s"
+                                       % (ref, part, keys[:14]))
                     cur = cur[part]
                 elif isinstance(cur, list):
                     cur = cur[int(part)]
@@ -126,9 +139,33 @@ class Bus:
                     raise KeyError(f"{ref} 在 {seg} 处无法下钻：{type(cur)}")
         return cur
 
+    def _coerce(self, name, args, step_id):
+        """把「本该是数组/对象、却被写成 JSON 字符串」的参数还原。
+
+        实测：模型会传 items='["O004","O005"]'（一整串），于是 select 把字符串当清单逐字符
+        遍历，报 KeyError；同一个错法重复三次就被判停滞，整轮作废。这不是它不懂几何，
+        只是一个格式问题 —— 与 where 条件、evidence 列表同样的宽容处理：认得出就还原，
+        并在账本里记一笔，不偷偷改。
+        """
+        spec = TOOLS[name]["params"]
+        out = {}
+        for k, v in args.items():
+            want = (spec.get(k) or "").strip().split(" ")[0].split("\u3000")[0]
+            if isinstance(v, str) and want in ("list", "dict") and v[:1] in "[{":
+                try:
+                    j = json.loads(v)
+                except Exception:
+                    j = None
+                if isinstance(j, (list, dict)) and (want == "dict") == isinstance(j, dict):
+                    self.ledger.append("arg_coerced", {"step": step_id, "tool": name, "arg": k})
+                    v = j
+            out[k] = v
+        return out
+
     def call(self, name, args, step_id=""):
         if name not in TOOLS:
             raise KeyError(f"未注册的工具 {name}；可用：{sorted(TOOLS)}")
+        args = self._coerce(name, args, step_id)
         t0 = time.perf_counter()
         try:
             out = TOOLS[name]["fn"](self, **args)

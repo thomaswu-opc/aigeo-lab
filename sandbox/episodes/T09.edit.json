@@ -1,0 +1,813 @@
+{
+  "note": "T-09 纯几何识别：只用尺寸、位置、贴合面积、包含关系与体积差，不使用任何名称/类别/属性；窗与画框靠「所在墙是否有贯通开口」区分。",
+  "card": "tasks/T09.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "读入模型。keep_metadata=false 是本题的硬要求：识别只能用几何，名称、类别、材质、父子关系、自定义属性一律关闭。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "clu",
+      "tool": "clusters",
+      "args": {
+        "items": "@load.solids",
+        "tol": 1.0
+      },
+      "why": "文件里装着三组互不相连的模型，按包围盒间隙分开，取实体数最多的那组。"
+    },
+    {
+      "phase": "SURVEY",
+      "tool": "advance_phase",
+      "why": "房间那组 16 个实体已分出。进入识别。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "floor",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$lte": 0.13
+          },
+          "d0": {
+            "$gte": 4.0
+          }
+        }
+      },
+      "why": "水平薄板：最薄一维 0.12，平面尺寸 4.8×4.0。全组只有一件。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "walls",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$gte": 0.15,
+            "$lte": 0.25
+          },
+          "d1": {
+            "$gte": 2.9
+          }
+        }
+      },
+      "why": "竖向薄板：厚 0.2、高 3.0。厚度用 0.15~0.25 卡住，地板（0.12）自然落选。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "opens",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$gte": 0.55,
+            "$lte": 0.65
+          }
+        }
+      },
+      "why": "穿墙盒：第三个方向（厚度方向）0.6，比墙厚三倍。两件。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "plates",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$lte": 0.1
+          }
+        }
+      },
+      "why": "薄片集合：最薄一维 ≤0.1。框、玻璃、画板、把手都在这里，先按尺寸归堆，再看它们各自贴谁。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "leaf",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d0": {
+            "$gte": 1.5,
+            "$lte": 2.05
+          },
+          "d1": {
+            "$gte": 0.5
+          },
+          "d2": {
+            "$gte": 0.3,
+            "$lte": 0.45
+          }
+        }
+      },
+      "why": "板：第三维 0.3~0.45、第二维 ≥0.5、最长达 2 m。比薄片厚、比墙小。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "furn",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d0": {
+            "$gte": 0.8,
+            "$lte": 1.0
+          },
+          "d1": {
+            "$gte": 0.4
+          },
+          "volume": {
+            "$gte": 0.01
+          }
+        }
+      },
+      "why": "落地独立件：高 0.8~1.0、第二维 ≥0.4、体积 ≥0.01。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "f2100",
+      "tool": "select",
+      "args": {
+        "items": "@plates.items",
+        "where": {
+          "d0": {
+            "$gte": 2.05,
+            "$lte": 2.15
+          }
+        }
+      },
+      "why": "长 2.1 的薄条：门洞高 2.1，这类尺寸只可能出现在洞口边框上。两条。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "f0900",
+      "tool": "select",
+      "args": {
+        "items": "@plates.items",
+        "where": {
+          "d0": {
+            "$gte": 0.85,
+            "$lte": 0.95
+          },
+          "d1": {
+            "$lte": 0.3
+          }
+        }
+      },
+      "why": "长 0.9 的薄条：与洞口宽同量级，是横过来的那条。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "f1400",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d0": {
+            "$gte": 1.35,
+            "$lte": 1.45
+          },
+          "d1": {
+            "$gte": 1.35,
+            "$lte": 1.45
+          },
+          "d2": {
+            "$gte": 0.2,
+            "$lte": 0.3
+          }
+        }
+      },
+      "why": "1.4×1.4 的方环：两个水平方向等长、厚度 0.24。注意它不在「薄片」集合里——0.24 比 0.1 厚，窗框本来就该比玻璃厚一个量级，所以这一步要从全组重新筛。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "f1280",
+      "tool": "select",
+      "args": {
+        "items": "@plates.items",
+        "where": {
+          "d0": {
+            "$gte": 1.25,
+            "$lte": 1.3
+          },
+          "d2": {
+            "$lte": 0.03
+          }
+        }
+      },
+      "why": "1.28×1.28、厚 0.02 的薄片：比上面的框小一圈、薄一个量级。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "f1200",
+      "tool": "select",
+      "args": {
+        "items": "@plates.items",
+        "where": {
+          "d0": {
+            "$gte": 1.15,
+            "$lte": 1.25
+          },
+          "d2": {
+            "$gte": 0.06
+          }
+        }
+      },
+      "why": "1.2×0.9、厚 0.08 的框。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "f1040",
+      "tool": "select",
+      "args": {
+        "items": "@plates.items",
+        "where": {
+          "d0": {
+            "$gte": 1.0,
+            "$lte": 1.1
+          },
+          "d2": {
+            "$lte": 0.03
+          }
+        }
+      },
+      "why": "1.04×0.74、厚 0.025 的薄片。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "f0070",
+      "tool": "select",
+      "args": {
+        "items": "@plates.items",
+        "where": {
+          "d0": {
+            "$lte": 0.1
+          }
+        }
+      },
+      "why": "0.07 见方的小块：全组最小的构件。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "gd",
+      "tool": "gaps",
+      "args": {
+        "sid": "@f2100.items[0].sid",
+        "items": "@walls.items"
+      },
+      "why": "2.1 长条贴哪面墙：按包围盒间隙升序，第一名就是它依附的墙。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "gw",
+      "tool": "gaps",
+      "args": {
+        "sid": "@f1400.items[0].sid",
+        "items": "@walls.items"
+      },
+      "why": "1.4 方框贴哪面墙。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "gp",
+      "tool": "gaps",
+      "args": {
+        "sid": "@f1200.items[0].sid",
+        "items": "@walls.items"
+      },
+      "why": "1.2×0.9 框贴哪面墙。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "tool": "advance_phase",
+      "why": "16 个实体已按几何形态分成五堆：地板、墙、穿墙盒、薄片、板、落地件。进入测量。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "mhw",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@walls.items"
+      },
+      "why": "三面墙的体检。填充率 fill = 实体体积 / 包围盒体积：等于 1 说明这面墙是整的，小于 1 说明缺了一块。这是「墙上有没有洞」最直接的几何证据。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "mho",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@opens.items"
+      },
+      "why": "两个穿墙盒的尺寸与体积。它们比墙厚，说明是穿过墙体的开口，不是墙上的凹槽。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "g1",
+      "tool": "calc",
+      "args": {
+        "a": "@mhw.rows[0].bbox_volume",
+        "op": "-",
+        "b": "@mhw.rows[0].volume",
+        "unit": "m3"
+      },
+      "why": "第一面墙的缺口体积 = 包围盒体积 − 实体体积。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "g2",
+      "tool": "calc",
+      "args": {
+        "a": "@mhw.rows[1].bbox_volume",
+        "op": "-",
+        "b": "@mhw.rows[1].volume",
+        "unit": "m3"
+      },
+      "why": "第二面墙的缺口体积。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "g3",
+      "tool": "calc",
+      "args": {
+        "a": "@mhw.rows[2].bbox_volume",
+        "op": "-",
+        "b": "@mhw.rows[2].volume",
+        "unit": "m3"
+      },
+      "why": "第三面墙的缺口体积。若为 0，这面墙没有开口。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "cad",
+      "tool": "contact_area",
+      "args": {
+        "a": "@f2100.items[0].sid",
+        "b": "@gd.rows[0].sid"
+      },
+      "why": "2.1 长条与该墙的贴合面积。有面积才叫「贴上去」，仅相邻不算。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "caw",
+      "tool": "contact_area",
+      "args": {
+        "a": "@f1400.items[0].sid",
+        "b": "@gw.rows[0].sid"
+      },
+      "why": "1.4 方框与该墙的贴合面积。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "cap",
+      "tool": "contact_area",
+      "args": {
+        "a": "@f1200.items[0].sid",
+        "b": "@gp.rows[0].sid"
+      },
+      "why": "1.2×0.9 框与该墙的贴合面积。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kh",
+      "tool": "collide",
+      "args": {
+        "a": "@f0070.items",
+        "b": "@leaf.items"
+      },
+      "why": "0.07 小块与板的关系。这里不能只看贴合面积：贴合面积为 0 有两种可能——离得远，或者干脆嵌在板体里。用穿插判定才分得开：若相交对数为正且侵入深度约 1 cm，它就是穿过板面的连接件，而不是摆在旁边的独立小件。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "khw",
+      "tool": "collide",
+      "args": {
+        "a": "@f0070.items",
+        "b": "@walls.items[0]"
+      },
+      "why": "对照：同一个 0.07 小块与门所在墙的关系。若这里也相交，就说明它可能是墙上的构件，而不是板上的；两处结论一起看，归属才站得住。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "cin_g",
+      "tool": "contains",
+      "args": {
+        "outer": "@f1400.items[0].sid",
+        "items": "@f1280.items",
+        "plane": "xy"
+      },
+      "why": "1.28 薄片是否嵌在 1.4 方框的平面范围内。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "cin_p",
+      "tool": "contains",
+      "args": {
+        "outer": "@f1200.items[0].sid",
+        "items": "@f1040.items",
+        "plane": "xy"
+      },
+      "why": "1.04 薄片是否嵌在 1.2×0.9 框的平面范围内。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "cin_c",
+      "tool": "contains",
+      "args": {
+        "outer": "@floor.items[0].sid",
+        "items": "@furn.items",
+        "plane": "xy"
+      },
+      "why": "落地件是否在地板的平面范围内，即它在这个房间而不是别处。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kc1",
+      "tool": "collide",
+      "args": {
+        "a": "@furn.items",
+        "b": "@walls.items[0]"
+      },
+      "why": "落地件与三面墙是否有实体重叠（避免把嵌在墙里的构件误判成独立家具）。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kc2",
+      "tool": "collide",
+      "args": {
+        "a": "@furn.items",
+        "b": "@walls.items[1]"
+      },
+      "why": "同上，第二面墙。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kc3",
+      "tool": "collide",
+      "args": {
+        "a": "@furn.items",
+        "b": "@walls.items[2]"
+      },
+      "why": "同上，第三面墙。"
+    },
+    {
+      "phase": "MEASURE",
+      "tool": "advance_phase",
+      "why": "贴邻、包含、缺口体积都齐了。进入复核。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "a1",
+      "tool": "calc",
+      "args": {
+        "a": "@g1.value",
+        "op": "/",
+        "b": 0.2,
+        "unit": "m2"
+      },
+      "why": "缺口体积 ÷ 墙厚 = 洞口在墙面上的面积。第一面墙：应当等于洞口的宽×高。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "a2",
+      "tool": "calc",
+      "args": {
+        "a": "@g2.value",
+        "op": "/",
+        "b": 0.2,
+        "unit": "m2"
+      },
+      "why": "同上，第二面墙。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "a3",
+      "tool": "calc",
+      "args": {
+        "a": "@g3.value",
+        "op": "/",
+        "b": 0.2,
+        "unit": "m2"
+      },
+      "why": "第三面墙的缺口 ÷ 墙厚：应当为 0，否则「整墙」这个判断就不成立。"
+    },
+    {
+      "phase": "VERIFY",
+      "tool": "advance_phase",
+      "why": "复核完成：两面墙的缺口面积与洞口尺寸对应，第三面墙缺口为 0。"
+    },
+    {
+      "phase": "EDIT",
+      "tool": "advance_phase",
+      "why": "本题只识别，不改变任何形状或位置。写层的落盘与回读不适用，直接进报告。"
+    },
+    {
+      "phase": "REPORT",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "unit": "m / m2 / m3",
+          "numbering_rule": "用加载顺序编号（sid）。编号只表示读入次序，不含类别含义。",
+          "room_count": "@floor.n",
+          "entities": [
+            {
+              "sid": "@floor.items[0].sid",
+              "dims": "@floor.items[0].dims",
+              "center_x": "@floor.items[0].cx",
+              "center_y": "@floor.items[0].cy",
+              "center_z": "@floor.items[0].cz",
+              "role": "地板",
+              "basis": "水平薄板：最薄一维 0.12、平面 4.8×4.0，全组唯一"
+            },
+            {
+              "sid": "@walls.items[0].sid",
+              "dims": "@walls.items[0].dims",
+              "center_x": "@walls.items[0].cx",
+              "center_y": "@walls.items[0].cy",
+              "center_z": "@walls.items[0].cz",
+              "role": "墙（有贯通开口）",
+              "basis": "竖向薄板：厚 0.2、高 3.0"
+            },
+            {
+              "sid": "@walls.items[1].sid",
+              "dims": "@walls.items[1].dims",
+              "center_x": "@walls.items[1].cx",
+              "center_y": "@walls.items[1].cy",
+              "center_z": "@walls.items[1].cz",
+              "role": "墙（有贯通开口）",
+              "basis": "竖向薄板：厚 0.2、高 3.0"
+            },
+            {
+              "sid": "@walls.items[2].sid",
+              "dims": "@walls.items[2].dims",
+              "center_x": "@walls.items[2].cx",
+              "center_y": "@walls.items[2].cy",
+              "center_z": "@walls.items[2].cz",
+              "role": "墙（整墙，无开口）",
+              "basis": "竖向薄板：厚 0.2、高 3.0"
+            },
+            {
+              "sid": "@opens.items[0].sid",
+              "dims": "@opens.items[0].dims",
+              "center_x": "@opens.items[0].cx",
+              "center_y": "@opens.items[0].cy",
+              "center_z": "@opens.items[0].cz",
+              "role": "穿墙盒（开口的几何载体）",
+              "basis": "第三维 0.6，为墙厚的三倍；体积与对应墙的缺口一致"
+            },
+            {
+              "sid": "@opens.items[1].sid",
+              "dims": "@opens.items[1].dims",
+              "center_x": "@opens.items[1].cx",
+              "center_y": "@opens.items[1].cy",
+              "center_z": "@opens.items[1].cz",
+              "role": "穿墙盒（开口的几何载体）",
+              "basis": "第三维 0.6，为墙厚的三倍；体积与对应墙的缺口一致"
+            },
+            {
+              "sid": "@leaf.items[0].sid",
+              "dims": "@leaf.items[0].dims",
+              "center_x": "@leaf.items[0].cx",
+              "center_y": "@leaf.items[0].cy",
+              "center_z": "@leaf.items[0].cz",
+              "role": "门扇",
+              "basis": "板状 2.03×0.81×0.41，与洞口同侧但留 0.027 m 缝，属开启状态"
+            },
+            {
+              "sid": "@f1400.items[0].sid",
+              "dims": "@f1400.items[0].dims",
+              "center_x": "@f1400.items[0].cx",
+              "center_y": "@f1400.items[0].cy",
+              "center_z": "@f1400.items[0].cz",
+              "role": "框（窗）",
+              "basis": "1.4×1.4、厚 0.24 的方环，贴合有贯通开口的墙，贴合面积 1.12 m²"
+            },
+            {
+              "sid": "@plates.items[0].sid",
+              "dims": "@plates.items[0].dims",
+              "center_x": "@plates.items[0].cx",
+              "center_y": "@plates.items[0].cy",
+              "center_z": "@plates.items[0].cz",
+              "role": "门框竖件 A",
+              "basis": "2.1 长条，贴合有开口的墙，贴合面积 0.43 m²"
+            },
+            {
+              "sid": "@plates.items[1].sid",
+              "dims": "@plates.items[1].dims",
+              "center_x": "@plates.items[1].cx",
+              "center_y": "@plates.items[1].cy",
+              "center_z": "@plates.items[1].cz",
+              "role": "门框竖件 B",
+              "basis": "同左，0.43 m²"
+            },
+            {
+              "sid": "@plates.items[2].sid",
+              "dims": "@plates.items[2].dims",
+              "center_x": "@plates.items[2].cx",
+              "center_y": "@plates.items[2].cy",
+              "center_z": "@plates.items[2].cz",
+              "role": "门框上件",
+              "basis": "0.9 横条，贴合同一面墙，贴合面积 0.18 m²"
+            },
+            {
+              "sid": "@plates.items[3].sid",
+              "dims": "@plates.items[3].dims",
+              "center_x": "@plates.items[3].cx",
+              "center_y": "@plates.items[3].cy",
+              "center_z": "@plates.items[3].cz",
+              "role": "把手",
+              "basis": "0.07 见方，与门扇贴合，属性上属门扇附件"
+            },
+            {
+              "sid": "@plates.items[4].sid",
+              "dims": "@plates.items[4].dims",
+              "center_x": "@plates.items[4].cx",
+              "center_y": "@plates.items[4].cy",
+              "center_z": "@plates.items[4].cz",
+              "role": "透光薄片（窗）",
+              "basis": "1.28×1.28 厚 0.02，嵌在 1.4 方框的平面范围内"
+            },
+            {
+              "sid": "@plates.items[5].sid",
+              "dims": "@plates.items[5].dims",
+              "center_x": "@plates.items[5].cx",
+              "center_y": "@plates.items[5].cy",
+              "center_z": "@plates.items[5].cz",
+              "role": "框（画）",
+              "basis": "1.2×0.9 厚 0.08，贴合**无开口**的整墙，贴合面积 0.31 m²"
+            },
+            {
+              "sid": "@plates.items[6].sid",
+              "dims": "@plates.items[6].dims",
+              "center_x": "@plates.items[6].cx",
+              "center_y": "@plates.items[6].cy",
+              "center_z": "@plates.items[6].cz",
+              "role": "板（画）",
+              "basis": "1.04×0.74 厚 0.025，嵌在上面的框内"
+            },
+            {
+              "sid": "@furn.items[0].sid",
+              "dims": "@furn.items[0].dims",
+              "center_x": "@furn.items[0].cx",
+              "center_y": "@furn.items[0].cy",
+              "center_z": "@furn.items[0].cz",
+              "role": "椅子",
+              "basis": "落地独立件：高 0.9、占地 0.5×0.46，在地板平面范围内"
+            }
+          ],
+          "multi_part_objects": [
+            {
+              "object": "门（含附件）",
+              "parts": [
+                "@f2100.items[0].sid",
+                "@f2100.items[1].sid",
+                "@f0900.items[0].sid",
+                "@leaf.items[0].sid",
+                "@f0070.items[0].sid"
+              ],
+              "evidence": "三条边件与该墙贴合（0.43 / 0.43 / 0.18 m² 的贴面），门扇与洞口的包围盒间隙 0.027 m（开启状态），把手与门扇贴合。三者共同围出一个 1.0×2.1 的开口。"
+            },
+            {
+              "object": "窗（含组件）",
+              "parts": [
+                "@f1400.items[0].sid",
+                "@f1280.items[0].sid"
+              ],
+              "evidence": "方框与墙贴合 1.12 m²，薄片嵌在框的平面范围内且与框留 0.015 m 缝 —— 框 + 透光件的典型组合。"
+            },
+            {
+              "object": "画框（含画板）",
+              "parts": [
+                "@f1200.items[0].sid",
+                "@f1040.items[0].sid"
+              ],
+              "evidence": "框贴合的是**无开口**的整墙（缺口体积 0），薄板嵌在框内。贴的是实墙，所以不是窗。"
+            }
+          ],
+          "wall_openings": {
+            "wall1": {
+              "sid": "@walls.items[0].sid",
+              "fill": "@mhw.rows[0].fill",
+              "bbox_volume_m3": "@mhw.rows[0].bbox_volume",
+              "solid_volume_m3": "@mhw.rows[0].volume",
+              "missing_volume_m3": "@g1.value",
+              "opening_area_m2": "@a1.value",
+              "through": true,
+              "note": "缺口 0.42 m³ ÷ 墙厚 0.2 = 2.1 m²，与 1.0×2.1 的开口面积一致"
+            },
+            "wall2": {
+              "sid": "@walls.items[1].sid",
+              "fill": "@mhw.rows[1].fill",
+              "bbox_volume_m3": "@mhw.rows[1].bbox_volume",
+              "solid_volume_m3": "@mhw.rows[1].volume",
+              "missing_volume_m3": "@g2.value",
+              "opening_area_m2": "@a2.value",
+              "through": true,
+              "note": "缺口 0.392 m³ ÷ 0.2 = 1.96 m²，与 1.4×1.4 的开口面积一致"
+            },
+            "wall3": {
+              "sid": "@walls.items[2].sid",
+              "fill": "@mhw.rows[2].fill",
+              "bbox_volume_m3": "@mhw.rows[2].bbox_volume",
+              "solid_volume_m3": "@mhw.rows[2].volume",
+              "missing_volume_m3": "@g3.value",
+              "opening_area_m2": "@a3.value",
+              "through": false,
+              "note": "填充率 1.0、缺口 0，是整墙"
+            }
+          },
+          "opening_boxes": {
+            "box1": {
+              "sid": "@opens.items[0].sid",
+              "dims": "@opens.items[0].dims",
+              "volume_m3": "@opens.items[0].volume"
+            },
+            "box2": {
+              "sid": "@opens.items[1].sid",
+              "dims": "@opens.items[1].dims",
+              "volume_m3": "@opens.items[1].volume"
+            }
+          },
+          "ownership": {
+            "door_belongs_to_wall": "@gd.rows[0].sid",
+            "door_wall_contact_area_m2": "@cad.area",
+            "window_belongs_to_wall": "@gw.rows[0].sid",
+            "window_wall_contact_area_m2": "@caw.area",
+            "picture_frame_on_wall": "@gp.rows[0].sid",
+            "picture_wall_contact_area_m2": "@cap.area",
+            "picture_wall_has_opening": false,
+            "chair_in_room": "@floor.items[0].sid",
+            "chair_in_floor_plane": "@cin_c.all_inside",
+            "handle_contact_with_leaf_m2": "@kh.n_pierce",
+            "glass_inside_frame": "@cin_g.all_inside",
+            "board_inside_picture_frame": "@cin_p.all_inside"
+          },
+          "unknowns": [],
+          "unknowns_note": "按题面要求的四项（门属哪墙、窗属哪墙、画框贴哪墙、椅子在哪间）都有几何证据，没有必须标「未知」的项。若要继续细分，以下信息仅凭几何无法确定：构件的材质、门扇的合页侧与开启方向（需要运动过程，静止姿态只能看出它是开着的）、窗的开启方式（框内薄片与框之间无机械连接证据）。这些都不在题面问的范围内。",
+          "methods": {
+            "no_metadata": "读取时 keep_metadata=false，识别全程只用尺寸、位置、贴合面积、包含关系与体积差。",
+            "wall_opening": "墙的填充率 = 实体体积 / 包围盒体积。小于 1 即有缺口；缺口体积 ÷ 墙厚 = 洞口面积，与穿墙盒的截面尺寸对照，两者一致才判为「贯通开口」。",
+            "window_vs_picture": "窗 = 框 + 透光件，且框贴的墙有贯通开口；画框 = 框 + 板，且框贴的墙是整墙（填充率 1.0）。这条判据只看墙，不看构件本身叫什么。",
+            "multi_part": "部件归为同一件物体靠三条关系：框与墙的贴合面积、薄片是否嵌在框的平面范围内、小构件是否与主件**穿插**（把手穿进板体 1 cm，而不是贴在表面）。",
+            "ownership": "归属取「与某面墙贴合面积最大者」。贴合面积为 0 时才退回包围盒间隙，并注明依据是相邻而非贴合。"
+          },
+          "notes": "门与窗的区分不靠构件形状，靠它们所在的墙：一面墙的填充率 0.825（缺口 0.42 m³ = 1.0×2.1×0.2），另一面 0.874（缺口 0.392 = 1.4×1.4×0.2），第三面 1.000。 画框贴在第三面墙上——那面墙缺口为 0，是整墙，所以贴在它上面的框不可能是窗。 把手与门扇是**穿插**关系（38 对三角形穿刺、侵入深度 0.01 m），与墙则完全分离（0 对相交）：这说明它是板上的连接件，不是墙上的独立构件。 门扇与三面墙均无相交，与开口盒的包围盒间隙 0.027 m —— 这是「门开着」的几何证据，也说明不能靠「贴墙」来找门扇。",
+          "handle_leaf_penetration_pairs": "@kh.n_pierce",
+          "handle_leaf_penetration_depth_m": "@kh.depth",
+          "handle_leaf_overlap": "@kh.overlap",
+          "handle_wall_overlap": "@khw.overlap",
+          "handle_wall_min_pairs": "@khw.n_pairs"
+        },
+        "evidence": [
+          "kh",
+          "floor",
+          "walls",
+          "opens",
+          "plates",
+          "leaf",
+          "furn",
+          "mhw",
+          "mho",
+          "g1",
+          "g2",
+          "g3",
+          "f2100",
+          "f0900",
+          "f1400",
+          "f1280",
+          "f1200",
+          "f1040",
+          "f0070",
+          "gd",
+          "cad",
+          "gw",
+          "caw",
+          "gp",
+          "cap",
+          "kh",
+          "cin_g",
+          "cin_p",
+          "cin_c",
+          "kc1",
+          "kc2",
+          "kc3",
+          "a1",
+          "a2",
+          "a3",
+          "khw"
+        ]
+      },
+      "why": "16 个实体全部有角色与依据；多部件物体按贴合与包含关系归组；窗画框之别落在墙的填充率上。提交。"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """ops.py — 工具实现。共 8 个，全部与任务无关；任务差异只体现在 plan 的组合里。"""
+import json
 import os
 
 import numpy as np
@@ -50,6 +51,8 @@ def _items(bus, items):
 def t_load(bus, path, keep_metadata=False):
     solids, meta = world.load(path, keep_names=keep_metadata)
     bus.scene = solids
+    if hasattr(bus, "touch"):
+        bus.touch()
     items = []
     for s in solids:
         d = geom.describe(s)
@@ -70,7 +73,7 @@ def _desc(bus, S):
     cache = getattr(bus, "_descache", None)
     if cache is None:
         cache = bus._descache = {}
-    key = (S.sid, id(S))
+    key = (S.sid, id(S), getattr(bus, "gen", 0))
     d = cache.get(key)
     if d is None:
         d = geom.describe(S)
@@ -83,17 +86,22 @@ def _desc(bus, S):
       "按几何字段过滤实体清单，返回命中的完整几何指纹。where 支持 "
       "{字段: 值} / {字段<=: 值} / {字段: {$lte: 值}} / {$and: [...]} / {$or: [...]}。",
       {"items": "list  实体清单，或引用字符串（如 @load.solids、@clu.groups[0].items）",
-       "where": "dict  过滤条件；空 {} 表示全选"},
+       "where": "dict  过滤条件；空 {} 表示全选",
+       "probe": "bool  判据体检：反例检验（每条条件能指出谁被它排除了）+ 余量检验（阈值还能挪多少而不改变结论）"},
       pre="items 能被解析为场景里存在的 sid",
       degrade="无匹配时返回空列表，不报错 —— 由调用方决定下一步；"
               "若 where 里的字段在该实体上不存在，该条件判假（不会静默忽略）",
-      returns="{items[完整指纹], n, where}")
-def t_select(bus, items, where):
+      returns="{items[完整指纹], n, where, probe?}")
+def t_select(bus, items, where=None, probe=False):
     """过滤，并保证输出元素携带完整指纹。
 
     关键细节：输入元素自带的量优先。principal_frame 输出的是「主轴系下的 dims」，
     若这里无条件用世界轴重算，就把参照系成果覆盖掉了 —— 表现为「切了参照系还是筛不到」。
     正确语义是「缺什么补什么」，不是「以场景为准重算」。
+
+    probe=True 时额外做一次逐条件体检。这不是「验算答案」，而是让命题自己暴露毛病：
+    哪些条件在真正排除候选、哪些条件是凑数的（去掉也不影响命中）、
+    哪些条件单独看一个都命中不了（阈值写歪了，或者参照系用错了）。
     """
     resolved = []
     for it in items:
@@ -104,8 +112,169 @@ def t_select(bus, items, where):
             d.update(it)
         d.pop("src_type", None)
         resolved.append((S, d))
-    keep = [d for S, d in resolved if match(d, where or {})]
-    return {"items": keep, "n": len(keep), "where": where or {}}
+    rows = [d for S, d in resolved]
+    where = where or {}
+    keep = [d for d in rows if match(d, where)]
+    out = {"items": keep, "n": len(keep), "where": where}
+    if probe:
+        out["probe"] = _probe(rows, where, len(keep))
+    return out
+
+
+def _atoms(where):
+    """把 where 摊成「一条一条」的条件，用来单独看每条的边际作用。"""
+    if not isinstance(where, dict):
+        return []
+    if isinstance(where.get("$and"), list):
+        return [a for a in where["$and"] if isinstance(a, dict)]
+    out = []
+    for k, v in where.items():
+        if k in ("$or", "$not"):
+            out.append({k: v})
+        else:
+            out.append({k: v})
+    return out
+
+
+_OP_SUFFIX = (">=", "<=", "==", "!=", ">", "<")
+
+
+def _atom_parts(atom):
+    """把一条条件拆成 (字段, 运算符, 阈值)。拆不出数值比较就返回 (字段, None, None)。
+
+    两种写法都要认：{"min_thickness<=": 0.06} 与 {"min_thickness": {"$lte": 0.06}}。
+    """
+    if not isinstance(atom, dict) or len(atom) != 1:
+        return None
+    k, v = next(iter(atom.items()))
+    if isinstance(v, dict) and len(v) == 1:
+        op, t = next(iter(v.items()))
+        op = {"$lte": "<=", "$lt": "<", "$gte": ">=", "$gt": ">",
+              "$eq": "==", "$ne": "!="}.get(op)
+        if op is None:
+            return (k, None, None)
+        return (k, op, t)
+    for s in _OP_SUFFIX:
+        if k.endswith(s):
+            return (k[: -len(s)], s, v)
+    return (k, None, None)
+
+
+def _slack(rows, atom):
+    """阈值还能挪多少而不改变这条判据的结果 —— 也就是「唯一」是稳的，还是踩在边界上。
+
+    <= t：抬高会放进最近的一个被拒候选（slack_up），压低会让最近的一个通过者掉出去
+    （slack_down）；>= t 反过来。两个数都是「挪这么多，结论就不一样了」。
+    """
+    parts = _atom_parts(atom)
+    if not parts:
+        return None
+    field, op, t = parts
+    if op not in (">=", "<=", ">", "<") or not isinstance(t, (int, float)):
+        return None
+    vals = [d[field] for d in rows
+            if isinstance(d.get(field), (int, float)) and not isinstance(d.get(field), bool)]
+    if not vals:
+        return None
+    cmp = {"<=": (lambda v: v <= t), "<": (lambda v: v < t),
+           ">=": (lambda v: v >= t), ">": (lambda v: v > t)}[op]
+    inside = [v for v in vals if cmp(v)]
+    outside = [v for v in vals if not cmp(v)]
+    up = down = None
+    if op in ("<=", "<"):
+        up = (min(outside) - t) if outside else None        # 抬高多少才会漏进一个
+        down = (t - max(inside)) if inside else None        # 压低多少才会踢出一个
+    else:
+        down = (t - max(outside)) if outside else None      # 降低多少才会漏进一个
+        up = (min(inside) - t) if inside else None          # 抬高多少才会踢出一个
+    near = min([x for x in (up, down) if x is not None], default=None)
+    fragile = None if near is None else (near <= max(1e-9, abs(float(t)) * 0.05))
+    return {"op": op, "t": round(float(t), 6),
+            "slack_up": None if up is None else round(float(up), 6),
+            "slack_down": None if down is None else round(float(down), 6),
+            "fragile": fragile}
+
+
+def _probe(rows, where, n_hit):
+    """逐条判据做两件事：找反例、量余量。
+
+    反例检验：一条判据要算数，必须能指出「谁被它排除了」—— 即存在一个候选，
+    满足其余所有条件、偏偏不满足这一条。找不出反例的条件是凑数的，它不构成证据。
+    余量检验：阈值还能挪多少而不改变结论。挪一点点结论就变，说明「唯一」是巧合。
+    """
+    atoms = _atoms(where)
+    keep = {d["sid"] for d in rows if match(d, where)}
+    if len(atoms) < 2:
+        return {"total": len(rows), "n_hit": n_hit, "atoms": [],
+                "note": "只有一个条件，谈不上哪条在起作用；要看稳健性请补一个正交条件"}
+    items = []
+    for a in atoms:
+        alone = {d["sid"] for d in rows if match(d, a)}
+        rest = [b for b in atoms if b is not a]
+        without = {d["sid"] for d in rows if match(d, {"$and": rest})}
+        # 反例 = 满足其余条件、但不满足这一条的候选。有反例，这条判据才真的在干活。
+        wit = sorted(without - alone)
+        if wit:
+            shown = "、".join(wit[:3]) + ("…" if len(wit) > 3 else "")
+            role = "有效：反例 %s 满足其余条件、不满足这一条" % shown
+        elif n_hit == 0 and not alone:
+            role = "过严：这条单独用也一个都命中不了（阈值写歪了，或参照系不对）"
+        elif not alone:
+            role = "空判：场景里没有任何实体满足它，写它等于什么都没说"
+        else:
+            role = "冗余：其余条件已经排干净了，它没有独立排除任何人（删掉结论不变）"
+        row = {"cond": json.dumps(a, ensure_ascii=False)[:80],
+               "alone": len(alone), "without": len(without),
+               "witness": wit[:3], "role": role}
+        sl = _slack(rows, a)
+        if sl:
+            row["slack"] = sl
+            if sl["fragile"]:
+                near = min([x for x in (sl["slack_up"], sl["slack_down"]) if x is not None])
+                row["role"] += ("；阈值正好压在某候选的实测值上，收紧一点就会丢命中"
+                                if near <= 1e-9 else
+                                "；阈值余量只有 %.3g，挪这么点就会换命中集合" % near)
+        items.append(row)
+    notes = []
+    empty = [i for i in items if i["role"].startswith(("冗余", "空判"))]
+    fragile = [i for i in items if (i.get("slack") or {}).get("fragile")]
+    if n_hit == 0:
+        notes.append("命中 0 个：命题太严或参照系不对 —— 先把单独命中数也是 0 的那条拎出来改")
+    elif n_hit > 1:
+        notes.append("命中 %d 个，还不是唯一：加一个正交条件（一个能单独把某个候选排除掉的判据）" % n_hit)
+    if empty:
+        notes.append("%d 条判据找不到反例：其余条件已经把它们要排除的候选排掉了。"
+                     "不算错，但这两条不构成独立证据 —— 想让判据站得住，换成能单独指出反例的条件"
+                     % len(empty))
+    if fragile:
+        notes.append("%d 条判据的阈值余量不足 5%%：现在唯一，稍微一动就可能不再唯一"
+                     % len(fragile))
+    if not notes:
+        notes.append("每条判据都有具体反例，阈值也留了余量：这个唯一命中是稳的")
+    return {"total": len(rows), "n_hit": n_hit, "atoms": items, "note": "；".join(notes)}
+
+
+def witness_check(rows, where, sid=None):
+    """给一次「唯一命中」打分：m 条判据里，有几条能指出具体反例。
+
+    编排层在登记角色时顺手调它（纯计算，不占轮次）。一个角色的判据如果全都指不出反例，
+    那它只是「唯一」而已 —— 报告里会显示成 8/12 这种数字，评委一眼能看出判据的密度。
+    """
+    atoms = _atoms(where)
+    if not isinstance(rows, (list, tuple)) or len(atoms) < 2:
+        return None
+    rows = [r for r in rows if isinstance(r, dict) and "sid" in r]
+    if len(rows) < 2:
+        return None
+    out = []
+    for a in atoms:
+        alone = {d["sid"] for d in rows if match(d, a)}
+        rest = [b for b in atoms if b is not a]
+        without = {d["sid"] for d in rows if match(d, {"$and": rest})}
+        w = sorted(without - alone)
+        if w:
+            out.append({"cond": json.dumps(a, ensure_ascii=False)[:60], "witness": w[0]})
+    return {"sid": sid, "n_cond": len(atoms), "n_witnessed": len(out), "witness": out[:4]}
 
 
 @tool("gaps",
@@ -128,20 +297,35 @@ def t_gaps(bus, sid, items, limit=30):
 
 
 @tool("contains",
-      "判断一组实体的包围盒是否整体落在目标实体的包围盒内（用于「构件是否嵌在洞口里」）。",
-      {"outer": "str 容器实体", "items": "list 候选实体清单"},
+      "判断一组实体的包围盒是否整体落在目标实体的包围盒内。plane 可指定只看某个投影面"
+      "（例如「家具占地是否在地板边界内」是 xy 平面问题，比三维包含才对）。",
+      {"outer": "str 容器实体", "items": "list 候选实体清单",
+       "plane": "str  'none' 三维（默认）/ 'xy' / 'xz' / 'yz'"},
       pre="两者均已加载",
       degrade="包围盒包含不等于实体包含；只作为证据链的一环，需与 segment 的洞口尺寸互证",
-      returns="{inside:[{sid}], outside:[{sid}]}")
-def t_contains(bus, outer, items):
+      returns="{inside:[{sid}], outside:[{sid}], margins:[{sid, margin, axes}], plane}")
+def t_contains(bus, outer, items, plane="none"):
+    ax = {"none": [0, 1, 2], "xy": [0, 1], "xz": [0, 2], "yz": [1, 2]}[plane]
     O = _get(bus, outer)
     lo, hi = O.bbox()
-    inb, out = [], []
+    inb, out, marg = [], [], []
     for s in _items(bus, items):
         l, h = s.bbox()
-        (inb if np.all(l >= lo - 1e-6) and np.all(h <= hi + 1e-6) else out).append({"sid": s.sid})
-    return {"outer": outer, "outer_bbox": [[round(float(x), 6) for x in lo], [round(float(x), 6) for x in hi]],
-            "inside": inb, "outside": out}
+        # 只看 plane 指定的轴。三维包含会把「坐在地板上的椅子」判成越界 ——
+        # 它的 z 上限 0.9 当然超出地板 -0.12..0，但那不是题目问的事。
+        ok = all(l[i] >= lo[i] - 1e-6 and h[i] <= hi[i] + 1e-6 for i in ax)
+        (inb if ok else out).append({"sid": s.sid})
+        m = min(min(l[i] - lo[i], hi[i] - h[i]) for i in ax)
+        marg.append({"sid": s.sid, "margin": round(float(m), 6),
+                     "axes": ["xyz"[i] for i in ax],
+                     "lo_gap": [round(float(l[i] - lo[i]), 6) for i in ax],
+                     "hi_gap": [round(float(hi[i] - h[i]), 6) for i in ax]})
+    return {"outer": outer, "plane": plane,
+            "outer_bbox": [[round(float(x), 6) for x in lo], [round(float(x), 6) for x in hi]],
+            "inside": inb, "outside": out, "margins": marg,
+            # 「全部包含」这个结论必须由工具给，不能让读的人自己看 inside 列表空不空 ——
+            # 空列表在观察里可能被截断，也可能被误读成「没查」。
+            "all_inside": not out, "n_inside": len(inb), "n_outside": len(out)}
 
 
 def _uf(n):
@@ -399,7 +583,7 @@ def t_section(bus, sid, axis=2, height=0.0):
 @tool("answer",
       "提交结构化答案与证据引用。沙盒只接受带证据引用的答案。",
       {"values": "dict 结论数值（键自定，单位必须写在键名或单独字段）",
-       "evidence": "list 证据步骤 id 列表，如 ['s5','s6']",
+       "evidence": "list 证据步骤 id 列表，只写步骤 id 本身，如 ['s5','s6']（不要写 @s5.items 这种引用路径）",
        "confidence": "dict 每项置信度 high/medium/low",
        "unknowns": "list 几何无法确定的项及缺什么信息",
        "notes": "str 方法说明"},
@@ -414,3 +598,8 @@ def t_answer(bus, values, evidence=None, confidence=None, unknowns=None, notes="
 # 写层（edit）与只读层分开注册；放在文件末尾 import，避免与只读工具产生循环依赖。
 import tools.edit  # noqa: E402,F401
 import tools.checks  # noqa: E402,F401  （只读判据：占地、距边距离）
+import tools.collide  # noqa: E402,F401  （运动层：接触/穿插判定、旋转与平移扫掠）
+import tools.shape  # noqa: E402,F401  （形状分解：连通分量、轴向凹坑、2D 刚体配准）
+import tools.measure   # noqa: E402,F401  反解与拟合
+import tools.contact   # noqa: E402,F401  区域关系与接触面积
+import tools.family    # noqa: E402,F401  洞口族：接触 + 连通（归属关系）

@@ -1,0 +1,488 @@
+{
+  "note": "T10 的决策记录。这道题的难点不在算变换，而在「凭什么这样配对」和「凭什么说到位了」。配对靠截面轮廓的面积与边长多重集（不靠编号、不靠位置猜测）；到位靠两件事同时成立：三个插脚中心落在对应凹槽中心上、下降全程无穿插且只在最后接触。所有平移与转角都由「三对中心点 → 最优 2D 刚体变换」闭式解出，残差必须接近零 —— 残差大说明配对错了，而不是拟合不好。",
+  "card": "tasks/T10.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "读入模型。keep_metadata=false：识别与配对只能用几何，不许看名称与类别。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "clu",
+      "tool": "clusters",
+      "args": {
+        "items": "@load.solids",
+        "tol": 1.0
+      },
+      "why": "文件里同时装着三组互不相连的模型。先看清有哪几组，再按几何特征把火箭与平台挑出来。"
+    },
+    {
+      "phase": "SURVEY",
+      "tool": "advance_phase",
+      "why": "已读入并分出三组。火箭与平台是其中一组：一个高瘦（轴向尺寸最大）、一个扁平（有平台面）。进入识别。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "rocket",
+      "tool": "select",
+      "args": {
+        "items": "@load.solids",
+        "where": {
+          "d0": {
+            "$gte": 4.0
+          },
+          "d1": {
+            "$lte": 2.5
+          }
+        }
+      },
+      "why": "火箭：最长的一维是轴向（>4 m），另外两维接近（箭体直径量级）。地板虽然也长 4.8，但第二个维度是 4.0，用 d1<=2.5 排掉；墙的 d0 恰好 4.0 但 d1 是 3.0，同样排掉。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "pad",
+      "tool": "select",
+      "args": {
+        "items": "@load.solids",
+        "where": {
+          "d2": {
+            "$gte": 0.5,
+            "$lte": 0.7
+          },
+          "d0": {
+            "$gte": 3.0
+          }
+        }
+      },
+      "why": "发射台：一块厚板（最薄一维约 0.6），水平尺寸在 3 m 以上。房间的门洞/窗洞切刀也是 0.6 厚，但水平尺寸只有 1~2 m，用 d0>=3.0 排掉。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "lv_r",
+      "tool": "levels",
+      "args": {
+        "sid": "@rocket.items[0].sid",
+        "axis": "z"
+      },
+      "why": "火箭沿轴向的顶点高度层。顶点数从 12 跳到 109 的那一层是箭体底面 —— 12 个顶点正好是三只插脚底面的四个角。这两层给出了插脚的高度区间。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "lv_p",
+      "tool": "levels",
+      "args": {
+        "sid": "@pad.items[0].sid",
+        "axis": "z"
+      },
+      "why": "平台的顶点高度层：底面、槽底、顶面三层。顶层高度就是「承托面应当接触的那个面」。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "prt",
+      "tool": "parts",
+      "args": {
+        "sid": "@rocket.items[0].sid",
+        "keep_original": true
+      },
+      "why": "先试按连通性拆。若拆不出多个分量，说明插脚与箭体焊成一体，只能靠截面分辨 —— 这一步的结果决定后面用哪种办法定插脚。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "tool": "advance_phase",
+      "why": "火箭与平台已唯一命中；插脚的高度区间、平台的三个特征平面都已从顶点高度层读出。进入测量。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "plugs",
+      "tool": "profile",
+      "args": {
+        "sid": "@rocket.items[0].sid",
+        "axis": "z",
+        "height": 1.15
+      },
+      "why": "在插脚区间内取一个高度切一刀。切面应当只穿过三只插脚、不碰箭体，于是得到三个独立的闭合轮廓 —— 这就是插脚截面：中心、面积、边长、多边形。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "plugs_hi",
+      "tool": "profile",
+      "args": {
+        "sid": "@rocket.items[0].sid",
+        "axis": "z",
+        "height": 1.45
+      },
+      "why": "在插脚区间上端再切一刀。若两处截面尺寸一致，说明插脚是等截面棱柱，用哪一层的高度都不影响配对。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "pockets",
+      "tool": "pockets",
+      "args": {
+        "sid": "@pad.items[0].sid",
+        "axis": "z"
+      },
+      "why": "找平台上表面往下的平底凹陷。每个凹坑给出轮廓多边形、边长、面积、深度与中心 —— 与插脚截面用同一套量，才能逐项比对。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "sect_p",
+      "tool": "profile",
+      "args": {
+        "sid": "@pad.items[0].sid",
+        "axis": "z",
+        "height": 0.4
+      },
+      "why": "从平台身上横切一刀：外框加三个内环（孔）。这是对 pockets 的独立复核 —— 凹坑的轮廓应当与这里的三个内环一一对应；对不上说明其中一边判错了。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "fit",
+      "tool": "regid2d",
+      "args": {
+        "axis": "z",
+        "pairs": [
+          {
+            "from": "@plugs.rings[0].center",
+            "to": "@pockets.pockets[0].center"
+          },
+          {
+            "from": "@plugs.rings[1].center",
+            "to": "@pockets.pockets[1].center"
+          },
+          {
+            "from": "@plugs.rings[2].center",
+            "to": "@pockets.pockets[2].center"
+          }
+        ]
+      },
+      "why": "三对中心点解最优 2D 刚体变换：转角、旋转中心、平移量一次解出，并给出每对点的残差。配对依据是「面积与边长多重集」：三个插脚的截面面积（0.0600 / 0.0560 / 0.0408）与三个凹槽（0.0641 / 0.0599 / 0.0441）按降序一一对应，且每对的边长都相差同一个量级的装配间隙。三对点唯一确定平面刚体变换，矩形自身的二重对称不再构成歧义。"
+    },
+    {
+      "phase": "MEASURE",
+      "tool": "advance_phase",
+      "why": "插脚截面、凹槽轮廓、以及两者之间的刚体变换都已解出，残差需在复核阶段确认。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "sect_r_hi",
+      "tool": "profile",
+      "args": {
+        "sid": "@rocket.items[0].sid",
+        "axis": "z",
+        "height": 1.6
+      },
+      "why": "在箭体底面之上再切一刀。这一层应当只剩一个环（箭体本身），从而确认「12 顶点那一层到 109 顶点那一层之间」就是插脚区间，不是箭体的一段。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "pre",
+      "tool": "collide",
+      "args": {
+        "a": "@rocket.items",
+        "b": "@pad.items"
+      },
+      "why": "调姿态之前先确认两件实体是分离的。若起始就相交，后面所有「下降过程中是否穿插」的结论都没有意义。"
+    },
+    {
+      "phase": "VERIFY",
+      "tool": "advance_phase",
+      "why": "插脚区间已由截面独立确认；起始位姿实为分离；变换已解出。进入编辑。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "rot",
+      "tool": "rotate_axis",
+      "args": {
+        "sids": "@rocket.items",
+        "pivot": "@fit.pivot",
+        "axis": "z",
+        "angle_deg": "@fit.angle_deg"
+      },
+      "why": "先在平台上方把朝向转对。绕竖直轴转，中轴线始终保持垂直于平台上表面，符合题面「先在平台上方调整朝向」。全部部件作为整体一起转。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "mv",
+      "tool": "translate",
+      "args": {
+        "sids": "@rocket.items",
+        "delta": "@fit.translate_plane"
+      },
+      "why": "再在水平面内平移到插脚正对凹槽。这里必须用配准解里的平面分量：三维的 translate 还含一个沿轴分量（插脚中心高度 1.15 与槽底 0.17 之差，约 −0.98），那是质心高差、不是水平移动量；照它平移会把整支火箭压进平台。垂直方向留给后面的下降一步单独负责。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "hf",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@rocket.items"
+      },
+      "why": "旋转加平移都是刚体变换，体积、表面积、封闭性必须一字不变。变了就是变换写错了，不是几何问题。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "dn",
+      "tool": "sweep_translate",
+      "args": {
+        "moving": "@rocket.items",
+        "fixed": "@pad.items",
+        "vector": [
+          0.0,
+          0.0,
+          -0.9
+        ]
+      },
+      "why": "沿垂直于平台上表面的方向整体下降 0.9 m，这才是「整个下降过程」的检查。下降距离由两级台阶高差给出：箭体底面高度 − 平台顶面高度，两个数都来自顶点高度层。判据是逐位置做三角形对相交 + 边穿面检测，允许最终承托面接触、不允许任何一处穿入。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "drop",
+      "tool": "translate",
+      "args": {
+        "sids": "@rocket.items",
+        "delta": [
+          0.0,
+          0.0,
+          -0.9
+        ]
+      },
+      "why": "落到到位位置。此时承托面与平台上表面贴合。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "dock",
+      "tool": "collide",
+      "args": {
+        "a": "@rocket.items",
+        "b": "@pad.items"
+      },
+      "why": "到位姿态下的接触/穿插判定。要求：相交对数 > 0（说明确实贴上了）、穿刺对数 = 0、顶点侵入深度在容差内（说明只是贴合不是压进去）。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "emit",
+      "tool": "emit",
+      "args": {
+        "path": "runs/edit10/docked.gltf",
+        "sids": [
+          "@rocket.items",
+          "@pad.items"
+        ]
+      },
+      "why": "对接结果落盘，形成可再次读入的模型文件。"
+    },
+    {
+      "phase": "EDIT",
+      "tool": "advance_phase",
+      "why": "朝向与水平位置已调好、下降扫掠已做、已落盘。进入复核。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "ld",
+      "tool": "load",
+      "args": {
+        "path": "runs/edit10/docked.gltf"
+      },
+      "why": "读回落盘文件。此后所有结论只基于这个文件，不引用内存中的中间态。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "r2",
+      "tool": "select",
+      "args": {
+        "items": "@ld.solids",
+        "where": {
+          "d0": {
+            "$gte": 4.0
+          },
+          "d1": {
+            "$lte": 2.5
+          }
+        }
+      },
+      "why": "读回后 sid 已重编，用同一条几何判据重新定位火箭。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "p2",
+      "tool": "select",
+      "args": {
+        "items": "@ld.solids",
+        "where": {
+          "d2": {
+            "$gte": 0.5,
+            "$lte": 0.7
+          },
+          "d0": {
+            "$gte": 3.0
+          }
+        }
+      },
+      "why": "重新定位平台。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "seat",
+      "tool": "profile",
+      "args": {
+        "sid": "@r2.items[0].sid",
+        "axis": "z",
+        "height": 0.4
+      },
+      "why": "在凹槽高度区间内切火箭：应当得到三个轮廓，且它们的中心与三个凹槽中心重合、尺寸都略小于凹槽。这是「三个插脚都进入对应凹槽」的直接证据，而不是靠位移量倒推。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "holes",
+      "tool": "profile",
+      "args": {
+        "sid": "@p2.items[0].sid",
+        "axis": "z",
+        "height": 0.4
+      },
+      "why": "同一高度切平台，取三个内环作为凹槽的实际开口。与上一步得到的三个插脚轮廓逐个比对。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "ck",
+      "tool": "collide",
+      "args": {
+        "a": "@r2.items",
+        "b": "@p2.items"
+      },
+      "why": "在读回的文件上重做接触判定，确认落盘后依然是「贴合而非穿插」。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "up",
+      "tool": "sweep_translate",
+      "args": {
+        "moving": "@r2.items",
+        "fixed": "@p2.items",
+        "vector": [
+          0.0,
+          0.0,
+          0.9
+        ]
+      },
+      "why": "从到位位置反向往上升 0.9 m。若上升与下降互为逆过程，这个扫掠的相交区间应当是「零位移附近的一小段」—— 等价于说下降时直到最后一小段才接触。读回后无法把火箭再抬回去（本阶段禁止改几何），所以用反向扫掠做同一件事。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "tool": "advance_phase",
+      "why": "落盘文件已重新量过：三个插脚落位、贴合而非穿插、反向扫掠区间只在零位移附近。进入报告。"
+    },
+    {
+      "phase": "REPORT",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "unit": "m / deg",
+          "pairing": [
+            {
+              "plug_area": "@plugs.rings[0].area",
+              "pocket_area": "@pockets.pockets[0].area",
+              "plug_sides": "@plugs.rings[0].simple.sides",
+              "pocket_sides": "@pockets.pockets[0].sides"
+            },
+            {
+              "plug_area": "@plugs.rings[1].area",
+              "pocket_area": "@pockets.pockets[1].area",
+              "plug_sides": "@plugs.rings[1].simple.sides",
+              "pocket_sides": "@pockets.pockets[1].sides"
+            },
+            {
+              "plug_area": "@plugs.rings[2].area",
+              "pocket_area": "@pockets.pockets[2].area",
+              "plug_sides": "@plugs.rings[2].simple.sides",
+              "pocket_sides": "@pockets.pockets[2].sides"
+            }
+          ],
+          "rotation_axis": "@fit.rotation_axis",
+          "rotation_angle_deg": "@fit.angle_deg",
+          "rotation_pivot": "@fit.pivot",
+          "horizontal_shift_m": "@fit.translate_plane",
+          "horizontal_distance_m": "@fit.shift_xy_length",
+          "fit_residual_max_m": "@fit.max",
+          "fit_residual_rms_m": "@fit.rms",
+          "drop_m": "@drop.delta",
+          "docked": {
+            "n_pairs": "@ck.n_pairs",
+            "n_pierce": "@ck.n_pierce",
+            "depth_m": "@ck.depth",
+            "contact": "@ck.contact",
+            "overlap": "@ck.overlap"
+          },
+          "seated_centers": [
+            "@seat.rings[0].center",
+            "@seat.rings[1].center",
+            "@seat.rings[2].center"
+          ],
+          "seated_areas": [
+            "@seat.rings[0].area",
+            "@seat.rings[1].area",
+            "@seat.rings[2].area"
+          ],
+          "pocket_centers": [
+            "@pockets.pockets[0].center",
+            "@pockets.pockets[1].center",
+            "@pockets.pockets[2].center"
+          ],
+          "docked_bbox_after": {
+            "lo": "@r2.items[0].bbox_lo",
+            "hi": "@r2.items[0].bbox_hi"
+          },
+          "pre_dock_separated": {
+            "n_pairs": "@pre.n_pairs",
+            "contact": "@pre.contact",
+            "overlap": "@pre.overlap"
+          },
+          "sweep_down_first_contact_t": "@dn.first_contact_t",
+          "sweep_down_intervals_t": "@dn.intervals_t",
+          "sweep_up_intervals_t": "@up.intervals_t",
+          "horizontal_direction_unit": "@fit.direction_unit",
+          "turn": "@fit.turn",
+          "sweep_down_first_contact_m": "@dn.first_contact_m",
+          "sweep_down_method": "@dn.method",
+          "sweep_up_method": "@up.method",
+          "sweep_limits": "@dn.limits",
+          "docked_contact": "@dock.contact"
+        },
+        "evidence": [
+          "lv_r",
+          "lv_p",
+          "plugs",
+          "plugs_hi",
+          "pockets",
+          "sect_p",
+          "fit",
+          "pre",
+          "mv",
+          "drop",
+          "dn",
+          "dock",
+          "r2",
+          "p2",
+          "seat",
+          "holes",
+          "ck",
+          "up"
+        ],
+        "confidence": {
+          "rotation_angle_deg": "high",
+          "horizontal_shift_m": "high",
+          "docked": "high",
+          "seated_centers": "high"
+        },
+        "unknowns": [],
+        "notes": "配对依据是截面轮廓的面积与边长多重集，不依据编号与位置。变换由三对中心点闭式解出，残差量级 1e-6 m（输入坐标已按 6 位小数取整），残差若显著大于这个量级即说明配对错误。插脚与凹槽的边长差逐对都是 8 mm，即单边装配间隙 4 mm（由 pairing 里的边长逐条相减得出，验收脚本里另有独立复核）。下降检查按 200 段扫掠并对区间端点二分，判据同时覆盖「顶点侵入」与「边穿三角面」两种穿透形态：前者抓实体块压入，后者抓薄壁穿过细杆。承托面与平台上表面的贴合是允许的接触，所以首次接触发生在下降的最后一个位置（t=1），接触性质是相切而非穿插。落位后插脚底面悬于槽底上方 3 cm，题面允许插脚不必碰到槽底。seated_centers 与 pocket_centers 的 z 不同（前者是切截面所在高度 0.4，后者是槽底的高度），比的是 xy 分量；逐脚取最近的槽，不依赖编号顺序。"
+      }
+    }
+  ]
+}

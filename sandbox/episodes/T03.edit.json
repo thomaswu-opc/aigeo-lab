@@ -1,0 +1,499 @@
+{
+  "note": "T-03 测量题：尺寸、面积、体积、球缺截面高度。四问都要交叉核对，其中「投影重叠只扣一次」用分层截面相加与整体投影之差来证明。",
+  "card": "tasks/T03.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "读入模型。keep_metadata=false：识别依据只能是几何，不许看名称与类别。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "clu",
+      "tool": "clusters",
+      "args": {
+        "items": "@load.solids",
+        "tol": 1.0
+      },
+      "why": "文件里装着三组互不相连的模型。按包围盒间隙分组，实体数最多的那组是房间，只有两个实体且跨度约 5 m 的那组是球与正方体。"
+    },
+    {
+      "phase": "SURVEY",
+      "tool": "advance_phase",
+      "why": "已分组。房间 16 个实体、球与正方体 2 个实体。进入识别。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "floor",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$lte": 0.13
+          },
+          "d0": {
+            "$gte": 4.0
+          }
+        }
+      },
+      "why": "地板：最薄一维远小于另外两维的水平板，且平面尺寸最大。它给出房间的水平基准。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "walls",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$gte": 0.15,
+            "$lte": 0.25
+          },
+          "d1": {
+            "$gte": 2.9
+          }
+        }
+      },
+      "why": "墙：厚度约 0.2、高度约 3.0 的竖向板。地板的薄向是 0.12，用下限 0.15 把它排掉。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "opens",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$gte": 0.55,
+            "$lte": 0.65
+          }
+        }
+      },
+      "why": "洞口切刀：厚度等于墙厚、且比墙更厚的盒状实体（穿墙方向 0.5 以上）。题面要求「按墙体开口计算，不扣门框」，所以开口本身要先找出来，再交给洞口底边工具去对齐墙面。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "doorop",
+      "tool": "select",
+      "args": {
+        "items": "@opens.items",
+        "where": {
+          "z_min": {
+            "$lte": 0.05
+          }
+        }
+      },
+      "why": "门洞的洞口下沿落在地板顶面上（标高 0），窗洞的下沿高出地面。用下沿高度分开两者。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "winop",
+      "tool": "select",
+      "args": {
+        "items": "@opens.items",
+        "where": {
+          "z_min": {
+            "$gte": 0.5
+          }
+        }
+      },
+      "why": "剩下的那个洞口就是窗洞。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "chair",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d0": {
+            "$gte": 0.8,
+            "$lte": 1.0
+          },
+          "d1": {
+            "$gte": 0.4
+          },
+          "volume": {
+            "$gte": 0.01
+          }
+        }
+      },
+      "why": "椅子：占地约 0.5×0.46、高约 0.9 的独立实体。用「高 0.8~1.0 且第二维 ≥0.4」把它和门套上横档（高 0.9 但第二维只有 0.26）分开。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "cube",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[1].items",
+        "where": {
+          "d0": {
+            "$gte": 2.4
+          }
+        }
+      },
+      "why": "模型 A 只有两个实体：边长 2.5 的方盒是正方体。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "ball",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[1].items",
+        "where": {
+          "d0": {
+            "$lte": 2.1
+          }
+        }
+      },
+      "why": "另一个就是球（三个方向等长、体积约 4.19）。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "tool": "advance_phase",
+      "why": "地板、三面墙、两个洞口、椅子、正方体、球都已定位。进入测量。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "fp_floor",
+      "tool": "footprint",
+      "args": {
+        "sids": "@floor.items",
+        "frame": "auto"
+      },
+      "why": "地板占地：最小包围矩形给出两个方向的跨度。按判据定义，垂直于门洞所在墙面的那个跨度是净宽，平行于它的是净深。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "xspan",
+      "tool": "calc",
+      "args": {
+        "a": "@fp_floor.rows[0].rect_world_xy[2]",
+        "op": "-",
+        "b": "@fp_floor.rows[0].rect_world_xy[0]",
+        "unit": "m"
+      },
+      "why": "地板的占地矩形在参照系下的 size 是局部坐标（本场景 u 沿 y、v 沿 x，看 axis_map 即知），不能按下标直接当成 x/y。用矩形四角的世界坐标相减，得到的是与「哪个下标是哪个轴」无关的实跨度。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "yspan",
+      "tool": "calc",
+      "args": {
+        "a": "@fp_floor.rows[0].rect_world_xy[3]",
+        "op": "-",
+        "b": "@fp_floor.rows[0].rect_world_xy[1]",
+        "unit": "m"
+      },
+      "why": "另一个方向的实跨度。两个跨度一个 4.8 一个 4.0，接下来按门洞穿墙方向定哪个叫净宽。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "mhw",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@walls.items"
+      },
+      "why": "墙的体检：上表面标高即墙高。用三面墙一起做，避免单面墙有缺口时读错。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "oed",
+      "tool": "opening_edge",
+      "args": {
+        "walls": "@walls.items",
+        "opening": "@doorop.items[0].sid",
+        "floor": "@floor.items[0].sid"
+      },
+      "why": "门洞底边：由「墙 + 洞口 + 地板」推出室内墙面上的那条线，同时给出洞口宽高。宽高按洞口本身算，不扣门套。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "oew",
+      "tool": "opening_edge",
+      "args": {
+        "walls": "@walls.items",
+        "opening": "@winop.items[0].sid",
+        "floor": "@floor.items[0].sid"
+      },
+      "why": "窗洞同样处理。窗洞不落在地面上，工具会一并给出下沿标高。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "paf",
+      "tool": "proj_area",
+      "args": {
+        "sids": "@floor.items",
+        "axis": "z"
+      },
+      "why": "地板顶面面积：地板是水平板，其顶面面积等于水平投影面积。同时返回包围矩形面积作对照——两者相等才说明这块板是完整矩形、没有缺角。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "pac",
+      "tool": "proj_area",
+      "args": {
+        "sids": "@chair.items",
+        "axis": "z"
+      },
+      "why": "椅子占地：整体投影的凸包面积。整体一次算出，重叠部分天然只算一次。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "rem",
+      "tool": "calc",
+      "args": {
+        "a": "@paf.area",
+        "op": "-",
+        "b": "@pac.area",
+        "unit": "m2"
+      },
+      "why": "剩余面积 = 地板顶面面积 − 椅子占地。派生量必须由工具算出，否则报告里那个数就没有出处。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "mhc",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@cube.items"
+      },
+      "why": "正方体体积：网格闭合体积。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "mhb",
+      "tool": "mesh_health",
+      "args": {
+        "sids": "@ball.items"
+      },
+      "why": "球体积（按网格）：多面体围成的体积，比理想球略小是必然的——平面三角形只能从内部逼近曲面。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "fs",
+      "tool": "fit_sphere",
+      "args": {
+        "sid": "@ball.items[0].sid"
+      },
+      "why": "球的半径不能抄题面的 1 m，要从这份网格自己拟合出来：理想体积必须由实测半径算出，两个来源才是独立比较。roundness 一并看，残差大就说明不是整球。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "dvol",
+      "tool": "calc",
+      "args": {
+        "a": "@fs.ideal_volume",
+        "op": "-",
+        "b": "@mhb.rows[0].volume",
+        "unit": "m3"
+      },
+      "why": "网格与理想的绝对差（理想 − 网格）。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "dratio",
+      "tool": "calc",
+      "args": {
+        "a": "@dvol.value",
+        "op": "/",
+        "b": "@fs.ideal_volume",
+        "unit": "1"
+      },
+      "why": "相对差：以理想值为分母。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "sol",
+      "tool": "solve_section_height",
+      "args": {
+        "sid": "@ball.items[0].sid",
+        "target": 1.0,
+        "axis": "z",
+        "lo": "@mhb.rows[0].bbox[0][2]",
+        "hi": "@fs.center[2]"
+      },
+      "why": "反解：面积 1 m² 的水平截面在哪个高度。搜索区间取球的最低点到球心——题面限定在这一段，出了这一段面积会重新变小，二分区间必须先卡住。工具会先预扫判单调，非单调就把所有并列解放出来。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "dzb",
+      "tool": "calc",
+      "args": {
+        "a": "@sol.height",
+        "op": "-",
+        "b": "@mhb.rows[0].bbox[0][2]",
+        "unit": "m"
+      },
+      "why": "题面要的是「距球最低点的高度」，不是绝对标高：用解出的高度减去最低点标高。"
+    },
+    {
+      "phase": "MEASURE",
+      "tool": "advance_phase",
+      "why": "八组量都出来了。进入复核：这些数要能互相印证，不能只靠单次测量。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "secf",
+      "tool": "section",
+      "args": {
+        "sid": "@floor.items[0].sid",
+        "axis": 2,
+        "height": -0.06
+      },
+      "why": "地板再量一次，换一种算法：在板厚中间切一刀量截面面积。与投影面积对得上，才说明「顶面是完整矩形」这个前提成立。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "lay1",
+      "tool": "section",
+      "args": {
+        "sid": "@chair.items[0].sid",
+        "axis": 2,
+        "height": 0.1
+      },
+      "why": "「投影重叠只扣一次」这句要证明。在椅子下部（腿所在高度）切一刀，四条腿在这一层是四个互不相交的环，工具会给出净面积。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "lay2",
+      "tool": "section",
+      "args": {
+        "sid": "@chair.items[0].sid",
+        "axis": 2,
+        "height": 0.45
+      },
+      "why": "座面高度再切一刀。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "lay3",
+      "tool": "section",
+      "args": {
+        "sid": "@chair.items[0].sid",
+        "axis": 2,
+        "height": 0.8
+      },
+      "why": "靠背高度切第三刀。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "s12",
+      "tool": "calc",
+      "args": {
+        "a": "@lay1.value",
+        "op": "+",
+        "b": "@lay2.value",
+        "unit": "m2"
+      },
+      "why": "把腿层与座面层的截面面积相加。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "s123",
+      "tool": "calc",
+      "args": {
+        "a": "@s12.value",
+        "op": "+",
+        "b": "@lay3.value",
+        "unit": "m2"
+      },
+      "why": "再加上靠背层。三层相加就是「按部件分别量再相加」会得到的扣除量。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "over",
+      "tool": "calc",
+      "args": {
+        "a": "@s123.value",
+        "op": "-",
+        "b": "@pac.area",
+        "unit": "m2"
+      },
+      "why": "三层相加多扣了多少：差值就是同一块投影被重复扣除的部分。差得越多，越说明必须用整体投影，而不是分层或分部件相加。"
+    },
+    {
+      "phase": "VERIFY",
+      "tool": "advance_phase",
+      "why": "复核完成：地板两种算法一致；椅子三层相加明显大于整体投影，证实「只扣一次」必须用整体。可以作答。"
+    },
+    {
+      "phase": "EDIT",
+      "tool": "advance_phase",
+      "why": "本题只读：一次几何都没改，没有落盘与回读可言。写层的两条纪律在这里不适用，直接进报告。"
+    },
+    {
+      "phase": "REPORT",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "unit": "m / m2 / m3",
+          "net_width_m": "@xspan.value",
+          "net_depth_m": "@yspan.value",
+          "wall_height_m": "@mhw.rows[0].bbox[1][2]",
+          "door_opening_width_m": "@oed.width",
+          "door_opening_height_m": "@oed.height",
+          "window_opening_width_m": "@oew.width",
+          "window_opening_height_m": "@oew.height",
+          "window_sill_z_m": "@oew.sill_z",
+          "floor_top_area_m2": "@paf.area",
+          "floor_top_area_check_m2": "@secf.value",
+          "chair_footprint_area_m2": "@pac.area",
+          "remaining_area_m2": "@rem.value",
+          "cube_volume_m3": "@mhc.rows[0].volume",
+          "ball_volume_mesh_m3": "@mhb.rows[0].volume",
+          "ball_volume_ideal_m3": "@fs.ideal_volume",
+          "ball_radius_fit_m": "@fs.radius",
+          "ball_fit_roundness": "@fs.roundness",
+          "ball_volume_diff_m3": "@dvol.value",
+          "ball_volume_diff_ratio": "@dratio.value",
+          "section_area_m2": 1.0,
+          "section_height_abs_m": "@sol.height",
+          "section_height_above_bottom_m": "@dzb.value",
+          "layers_sum_m2": "@s123.value",
+          "layers_overcount_m2": "@over.value",
+          "methods": {
+            "width_depth": "地板占地的最小包围矩形，垂直于门洞所在墙面的跨度记为净宽，平行于它的记为净深。",
+            "wall_height": "三面墙一起体检，取上表面标高；地板顶面为 0，故墙高即该标高。",
+            "opening": "由墙、洞口、地板三者对齐推出洞口底边，宽高取洞口实体沿墙面与竖向的跨度，不扣门套与窗框。",
+            "floor_area": "地板是水平板，顶面面积 = 水平投影面积；另在板厚中位切一刀量截面面积交叉核对。",
+            "chair_area": "整体投影的凸包面积。分层截面相加会重复，实测差值见 layers_overcount_m2。",
+            "ball_ideal": "半径由网格顶点最小二乘拟合，理想体积 = 4/3·π·r³；与网格体积的差来自曲面被三角面内接逼近。",
+            "section_height": "先预扫判单调，再在首个跨越段内二分到面积容差 1e-6；报绝对标高与距最低点高度两个值。"
+          },
+          "notes": "房间一组与球、正方体一组按包围盒间隙分离（间隙 1.76 m 与 2.20 m），不使用文件里的分组或名称。球的理想体积用的是拟合半径而非题面标称半径，因此「网格偏小」这个结论不依赖任何先验数字。剩余面积只扣椅子一次：椅子是单连通实体，整体投影天然不重复；分层截面相加得到的是另一套数，差值即重复扣除量，已一并给出。窗洞开口高按洞口下沿到上沿计，不把窗台高度算进去。 净宽净深按世界跨度给出：地板的 size 是主参照系下的顺序（u 沿 y、v 沿 x），直接取 size[0]/size[1] 会把宽深对调，所以改成用占地矩形四角的世界坐标相减。 球的最低点标高恰为 0，所以「绝对标高」与「距最低点高度」数值相同；两个都报是因为题面要的是后者，而前者能被人直接对着模型核对。",
+          "floor_extent_note": "地板世界跨度 {4.8} × {4.0}；门洞穿墙方向为 x（来自 opening_edge 的 axis_thin），故沿 x 的跨度记为净宽、沿 y 的记为净深。"
+        },
+        "evidence": [
+          "fp_floor",
+          "mhw",
+          "oed",
+          "oew",
+          "paf",
+          "pac",
+          "rem",
+          "mhc",
+          "mhb",
+          "fs",
+          "dvol",
+          "dratio",
+          "sol",
+          "dzb",
+          "secf",
+          "lay1",
+          "lay2",
+          "lay3",
+          "s12",
+          "s123",
+          "over"
+        ]
+      },
+      "why": "八组量、两个口径的体积、反解高度都有工具出处；派生量由 calc 算出。提交。"
+    }
+  ]
+}

@@ -143,39 +143,8 @@ def _clip_halfspace(P, F, n, d, side=1, eps=1e-9):
 
 
 def _rings(segs, eps=1e-9):
-    """把切口线段接成闭合环。返回 (rings, dangling)。
-
-    每个节点度数必须恰好 2。度数为 1 说明存在没被相邻三角形共享的切口边 ——
-    这时封口一定漏，必须把它报出来而不是凑合着封。
-    """
-    adj = {}
-    pos = {}
-    for (a, b), pa, pb in segs:
-        pos[a] = pa
-        pos[b] = pb
-        adj.setdefault(a, []).append(b)
-        adj.setdefault(b, []).append(a)
-    dangling = [k for k, v in adj.items() if len(v) != 2]
-    rings, seen = [], set()
-    for start in adj:
-        if start in seen or len(adj[start]) != 2:
-            continue
-        ring, prev, cur = [start], None, start
-        seen.add(start)
-        while True:
-            nxt = [x for x in adj[cur] if x != prev]
-            if not nxt:
-                break
-            prev, cur = cur, nxt[0]
-            if cur == start:
-                break
-            if cur in seen:
-                break
-            seen.add(cur)
-            ring.append(cur)
-        if len(ring) >= 3 and cur == start:
-            rings.append(np.array([pos[k] for k in ring], float))
-    return rings, dangling
+    """接环逻辑只有一份，在 geom 里；这里保留旧名，避免 cut_plane 的调用点散开。"""
+    return geom.rings_from_segs(segs)
 
 
 def _basis(n):
@@ -261,6 +230,12 @@ def mesh_report(P, F):
     cr = np.cross(B - A, C - A)
     ar = np.linalg.norm(cr, axis=1) / 2.0
     vol = float(np.einsum("ij,ij->i", A, np.cross(B, C)).sum() / 6.0)
+    # 包围盒体积与填充率。墙上有洞时填充率必然小于 1，且「少了多少」正好是洞口体积：
+    # 这是判断「这面墙上有没有开口」唯一不依赖洞口实体的办法，也是 T-09 里
+    # 区分「窗（墙上有贯通洞）」与「画框（墙是整的）」的那条分水岭。
+    bv = float(np.prod(hi - lo))
+    out["bbox_volume"] = round(bv, 9)
+    out["fill"] = round(vol / bv, 9) if bv > 1e-15 else None
 
     E = np.vstack([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
     ukey = np.sort(E, axis=1)
@@ -329,6 +304,8 @@ def _replace(bus, S, P, F, tag=""):
     表现为「改了但判据不认」。换实例让缓存自然失效。
     """
     P, F = _welded(P, F)
+    if hasattr(bus, "touch"):
+        bus.touch()          # 场景代号 +1：指纹缓存按 (sid, id(S), gen) 取，避免 id 复用命中旧缓存
     new = Solid(S.sid, S.name, P, F, (S.src or "?") + ("+" + tag if tag else "+edit"))
     i = bus.scene.index(S)
     bus.scene[i] = new
@@ -345,16 +322,31 @@ def _get(bus, sid):
     raise KeyError("场景里没有 %s；现有 %s…" % (sid, [x.sid for x in bus.scene][:12]))
 
 
-def _sids(bus, sids):
+def _flatten_sids(sids):
+    """把各种形态的「实体清单」压成一维 sid 字符串列表。
+
+    `["@leaf.items", "@chair.items"]` 这种写法解析出来是嵌套的
+    （`[[{sid:"C011"}], [{sid:"C017"}]]`），逐项当 sid 处理会抛
+    「场景里没有 [{'sid': ...}]」，然后被记成工具失败 —— 一个写法问题
+    被误判成证据不足。这里递归展平，字符串、dict、list 三种输入都接住。
+    """
+    if sids is None:
+        return []
     if isinstance(sids, str):
-        sids = [x.strip("\"'") for x in sids.replace("[", " ").replace("]", " ").replace(",", " ").split()]
-        sids = [x for x in sids if x]
-    elif isinstance(sids, dict):
-        sids = sids.get("sids") or sids.get("items") or [sids]
+        return [x for x in sids.replace("[", " ").replace("]", " ")
+                .replace(",", " ").replace("\"", " ").replace("'", " ").split() if x]
+    if isinstance(sids, dict):
+        if "sid" in sids:
+            return [sids["sid"]]
+        return _flatten_sids(sids.get("sids") or sids.get("items") or [])
     out = []
     for it in sids:
-        out.append(_get(bus, it["sid"] if isinstance(it, dict) else it))
+        out.extend(_flatten_sids(it))
     return out
+
+
+def _sids(bus, sids):
+    return [_get(bus, x) for x in _flatten_sids(sids)]
 
 
 def _f(v):
@@ -382,6 +374,47 @@ def t_translate(bus, sids, delta):
         lo1, hi1 = S.bbox()
         rows.append({"sid": S.sid, "bbox_before": _f([lo0, hi0]), "bbox_after": _f([lo1, hi1])})
     return {"moved": rows, "n": len(rows), "delta": _f(d)}
+
+
+@tool("rotate_axis",
+      "把一组实体绕一条固定轴整体旋转一个角度（右手定则）。刚性变换，不缩放不剪切。"
+      "转轴用「轴上一点 + 方向」给出，因此转轴不必过原点。",
+      {"sids": "list 要旋转的实体 sid 列表（或单个 sid）",
+       "pivot": "list [px,py,pz] 轴上的任一点，米",
+       "axis": "str|list 轴向，'x'/'y'/'z' 或三分量向量",
+       "angle_deg": "float 旋转角（度），右手定则：拇指指 axis 正向，四指方向为正"},
+      pre="实体已加载；pivot 与 axis 共同确定一条无限长直线",
+      degrade="只做刚体旋转；要绕自身中心转就把 pivot 取成该实体的包围盒中心",
+      returns="{rotated:[{sid,bbox_before,bbox_after,max_shift}], pivot, axis, angle_deg}",
+      unit="m / deg")
+def t_rotate_axis(bus, sids, pivot, axis, angle_deg):
+    piv = np.asarray(pivot, float).reshape(3)
+    if isinstance(axis, str):
+        m = {"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}
+        if axis.lower() not in m:
+            raise ValueError(f"轴只能取 x/y/z 或三分量向量，收到 {axis!r}")
+        k = np.array(m[axis.lower()], float)
+    else:
+        k = np.asarray(axis, float).reshape(3)
+    nn = float(np.linalg.norm(k))
+    if nn < 1e-12:
+        raise ValueError("轴向量长度为 0")
+    k = k / nn
+    th = math.radians(float(angle_deg))
+    K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+    R = np.eye(3) + math.sin(th) * K + (1 - math.cos(th)) * (K @ K)
+    rows = []
+    for S in _sids(bus, sids):
+        lo0, hi0 = S.bbox()
+        P0 = np.asarray(S.P, float)
+        P1 = (P0 - piv) @ R.T + piv
+        shift = float(np.linalg.norm(P1 - P0, axis=1).max()) if len(P0) else 0.0
+        S = _replace(bus, S, P1, S.F, "rotate")
+        lo1, hi1 = S.bbox()
+        rows.append({"sid": S.sid, "bbox_before": _f([lo0, hi0]), "bbox_after": _f([lo1, hi1]),
+                     "max_shift": round(shift, 9)})
+    return {"rotated": rows, "n": len(rows), "pivot": _f(piv),
+            "axis": _f(k), "angle_deg": float(angle_deg)}
 
 
 @tool("stretch_axis",

@@ -104,6 +104,18 @@ def describe(S):
         "dims": [round(d, 6) for d in ds],
         # 三个标量版本，供 select 做纯数据比较（不做 eval）
         "d0": round(ds[0], 6), "d1": round(ds[1], 6), "d2": round(ds[2], 6),
+        # 按轴给跨度。d0/d1/d2 是**降序排过**的长度，它们不说是哪根轴：
+        # 模型被整体旋转 90° 后，4.8 仍在 d0，但它已经从 x 换到了 y。
+        # 判「净宽是哪一维」只能看按轴的跨度，不能看排序后的三边。
+        "sx": round(dims[0], 6), "sy": round(dims[1], 6), "sz": round(dims[2], 6),
+        "span": [round(dims[0], 6), round(dims[1], 6), round(dims[2], 6)],
+        # 水平面内长边落在哪根轴上，值是多少。「净宽沿哪一维」必须落到一根具体的轴上，
+        # 而 d0/d1/d2 排序后不带轴名；只给 sx/sy 时模型得自己比大小 —— 实测它在旋转过的
+        # 房间上就是比反了（把短边当成长边），然后整套左右/前后的换算全跟着反。
+        # 这不是替它判题：比较 sx 与 sy 大小的结论，谁看都一样。
+        "h_long_axis": "x" if dims[0] >= dims[1] else "y",
+        "h_long": round(max(dims[0], dims[1]), 6),
+        "h_short": round(min(dims[0], dims[1]), 6),
         "cover": round(ds[2] / max(ds[1], EPS), 6),
         "bbox_lo": [round(float(x), 6) for x in lo],
         "bbox_hi": [round(float(x), 6) for x in hi],
@@ -296,29 +308,153 @@ def distance_min(A, B, edge_budget=3_000_000):
 # ------------------------------------------------------------ 截面
 
 
-def section_area(S, axis=2, height=0.0):
-    ax = [0, 1, 2]
-    ax.remove(axis)
-    ui, vi = ax[0], ax[1]
-    A, B, C = tri_arrays(S)
-    z = np.stack([A[:, axis], B[:, axis], C[:, axis]], 1)
-    pts = np.stack([A, B, C], 1)
-    segs = []
+def _qkey(p, q=1e9):
+    """把交点量化成节点 id（1e-9 m 网格）。相邻三角形算出的同一个交点必须落在同一格，
+    否则环接不上 —— 表现为「该高度没有截面」或 dangling。"""
+    return (int(round(p[0] * q)), int(round(p[1] * q)), int(round(p[2] * q)))
+
+
+def section_segs(S, axis, height):
+    """切一刀，返回每个被切三角形贡献的一条线段，端点已量化成节点 id。
+
+    切面高度会**偏移 1e-9 m**。这不是偷懒，是必须的：球在赤道高度上恰好有一圈顶点落在
+    切面里，`(zi-h)*(zj-h) < 0` 对所有边都为假，于是整个截面报 0 m²（实测过）。
+    偏移量比任何判据容差小三个量级，但能把「顶点恰在切面上」这个退化情形消掉。
+    """
+    off = 1e-9 * max(1.0, abs(float(height)))
+    h = float(height) + off
+    P = np.asarray(S.P, float)
+    F = np.asarray(S.F, int)
+    d = P[:, axis] - h
+    per = {}
     for i, j in ((0, 1), (1, 2), (2, 0)):
-        zi, zj = z[:, i], z[:, j]
-        cr = ((zi - height) * (zj - height)) < 0
-        if not cr.any():
+        di, dj = d[F[:, i]], d[F[:, j]]
+        m = (di > 0) != (dj > 0)
+        if not m.any():
             continue
-        t = (height - zi[cr]) / (zj[cr] - zi[cr])
-        segs.append(pts[cr, i] + (pts[cr, j] - pts[cr, i]) * t[:, None])
+        ti = np.nonzero(m)[0]
+        t = di[ti] / (di[ti] - dj[ti])
+        pt = P[F[ti, i]] + (P[F[ti, j]] - P[F[ti, i]]) * t[:, None]
+        pt[:, axis] = float(height)          # 轴分量回落到名义切面，压掉插值残差
+        for k, p in zip(ti, pt):
+            per.setdefault(int(k), []).append(p)
+    segs = []
+    for k, ps in per.items():
+        if len(ps) != 2:
+            continue
+        a, b = ps
+        segs.append(((_qkey(a), _qkey(b)), a, b))
+    return segs, h
+
+
+def rings_from_segs(segs):
+    """把切口线段接成闭合环。返回 (rings, dangling)。
+
+    每个节点度数必须恰好 2。度数为 1 说明存在没被相邻三角形共享的切口边 ——
+    这时封口一定漏，必须把它报出来而不是凑合着封。
+    """
+    adj, pos = {}, {}
+    for (a, b), pa, pb in segs:
+        pos[a], pos[b] = pa, pb
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    dangling = [k for k, v in adj.items() if len(v) != 2]
+    rings, seen = [], set()
+    for start in adj:
+        if start in seen or len(adj[start]) != 2:
+            continue
+        ring, prev, cur = [start], None, start
+        seen.add(start)
+        while True:
+            nxt = [x for x in adj[cur] if x != prev]
+            if not nxt:
+                break
+            prev, cur = cur, nxt[0]
+            if cur == start:
+                break
+            if cur in seen:
+                break
+            seen.add(cur)
+            ring.append(cur)
+        if len(ring) >= 3 and cur == start:
+            rings.append(np.array([pos[k] for k in ring], float))
+    return rings, dangling
+
+
+def poly_area_2d(Q):
+    """有向面积（逆时针为正）。"""
+    x, y = Q[:, 0], Q[:, 1]
+    return float(0.5 * np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+def poly_centroid_2d(Q):
+    """面积质心。
+
+    不能用顶点平均：三角化会在直边中间插共线点，顶点被拽向那一侧，
+    实测偏 2 cm —— 这个量级足以让「配对正确」看起来像「残差很大」。
+    """
+    x, y = Q[:, 0], Q[:, 1]
+    cr = x * np.roll(y, -1) - np.roll(x, -1) * y
+    a = 0.5 * cr.sum()
+    if abs(a) < 1e-15:
+        return np.array([x.mean(), y.mean()])
+    return np.array([((x + np.roll(x, -1)) * cr).sum(), ((y + np.roll(y, -1)) * cr).sum()]) / (6 * a)
+
+
+def pt_in_poly(p, Q):
+    """射线奇偶法判点在多边形内（2D）。"""
+    x, y = p
+    inside = False
+    n = len(Q)
+    for i in range(n):
+        x1, y1 = Q[i]
+        x2, y2 = Q[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            if x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-300) + x1:
+                inside = not inside
+    return inside
+
+
+def section_rings(S, axis=2, height=0.0, min_area=1e-9):
+    """截面环，带「是否内环」标记。返回 (rings, dangling, probe_height)。
+
+    内环（孔洞）靠**嵌套层数**判，不靠环绕方向：环绕方向取决于三角形朝向，
+    在同一个实体里外环和内环之间没有稳定关系。
+    """
+    bi, ci = [i for i in (0, 1, 2) if i != axis]
+    segs, h = section_segs(S, axis, height)
     if not segs:
-        return {"value": 0.0, "n_segments": 0, "axis": "xyz"[axis], "height": height}
-    P = np.vstack(segs)
-    n = len(P) // 2
-    p1, p2 = P[:2 * n:2], P[1:2 * n:2]
-    area = abs(0.5 * np.sum(p1[:, ui] * p2[:, vi] - p2[:, ui] * p1[:, vi]))
-    return {"value": round(float(area), 6), "n_segments": int(n),
-            "axis": "xyz"[axis], "height": height}
+        return [], [], h
+    rings, dangling = rings_from_segs(segs)
+    polys = [R[:, [bi, ci]] for R in rings]
+    keep = [(q, abs(poly_area_2d(q))) for q in polys]
+    keep = [(q, a) for q, a in keep if a >= min_area]
+    out = []
+    for i, (q, a) in enumerate(keep):
+        c = poly_centroid_2d(q)
+        depth = sum(1 for j, (q2, _) in enumerate(keep) if j != i and pt_in_poly(c, q2))
+        out.append({"polygon": q, "area": a, "inner": depth % 2 == 1, "depth": depth})
+    return out, dangling, h
+
+
+def section_area(S, axis=2, height=0.0):
+    """截面**净面积** = 外环面积 − 内环面积。
+
+    早先的实现把所有交线段按三角形遍历顺序成对喂给鞋带公式，得到的不是环、
+    而是「每段各自对原点张成的三角形」之和 —— 球在 z=0.5 报 4.658 m²（真值 2.356，
+    差 1.98 倍），赤道处直接报 0。修法是先把线段接成环（rings_from_segs），
+    再按嵌套关系判内外。判断一个人有没有算对，看的就是这两个数：
+    z=0.5 应给 2.3536，z=1.0 应给 3.1403。
+    """
+    rings, dangling, h = section_rings(S, axis, height)
+    if not rings:
+        return {"value": 0.0, "n_segments": 0, "n_rings": 0, "n_inner": 0,
+                "gross": 0.0, "dangling": len(dangling), "axis": "xyz"[axis], "height": height}
+    gross = sum(r["area"] for r in rings if not r["inner"])
+    netsub = sum(r["area"] for r in rings if r["inner"])
+    return {"value": round(gross - netsub, 6), "n_segments": 0, "n_rings": len(rings),
+            "n_inner": sum(1 for r in rings if r["inner"]), "gross": round(gross, 6),
+            "dangling": len(dangling), "axis": "xyz"[axis], "height": height}
 
 
 def aabb_gap(A, B):

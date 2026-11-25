@@ -1,0 +1,317 @@
+{
+  "note": "T-04 检查题：家具数量、占地范围、距门距离、穿墙四项判定，重点在「占地」是平面问题（三维包含会误判）与「距门」的口径。",
+  "card": "tasks/T04.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "读入模型。keep_metadata=false：识别依据只能是几何，不许看名称与类别。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "clu",
+      "tool": "clusters",
+      "args": {
+        "items": "@load.solids",
+        "tol": 1.0
+      },
+      "why": "文件里装着三组互不相连的模型。房间那组实体数最多。"
+    },
+    {
+      "phase": "SURVEY",
+      "tool": "advance_phase",
+      "why": "已分出三组，取房间那组。进入识别。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "floor",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$lte": 0.13
+          },
+          "d0": {
+            "$gte": 4.0
+          }
+        }
+      },
+      "why": "地板：水平薄板，最薄一维远小于平面尺寸。地板数量即房间数量。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "walls",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$gte": 0.15,
+            "$lte": 0.25
+          },
+          "d1": {
+            "$gte": 2.9
+          }
+        }
+      },
+      "why": "墙：厚度约 0.2、高约 3.0 的竖向板。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "chair",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d0": {
+            "$gte": 0.8,
+            "$lte": 1.0
+          },
+          "d1": {
+            "$gte": 0.4
+          },
+          "volume": {
+            "$gte": 0.01
+          }
+        }
+      },
+      "why": "家具：落地、独立、尺寸在人体尺度（高 0.8~1.0、第二维 ≥0.4）。门套上横档也高 0.9，但第二维只有 0.26，用它排除；门扇是 2 m 级的长条，也不在这个区间。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "doorop",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$gte": 0.55,
+            "$lte": 0.65
+          },
+          "z_min": {
+            "$lte": 0.05
+          }
+        }
+      },
+      "why": "门洞：穿墙厚度 0.6 的盒状体，且下沿落在地板顶面上（窗洞下沿离地）。距门距离要量到它的下沿。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "tool": "advance_phase",
+      "why": "地板、墙、家具、门洞都已定位。进入测量。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "fp",
+      "tool": "footprint",
+      "args": {
+        "sids": "@chair.items",
+        "frame": "auto"
+      },
+      "why": "家具占地：投影的最小包围矩形。尺寸顺序看 axis_map，别按下标当 x/y。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "oe",
+      "tool": "opening_edge",
+      "args": {
+        "walls": "@walls.items",
+        "opening": "@doorop.items[0].sid",
+        "floor": "@floor.items[0].sid"
+      },
+      "why": "门洞下沿：室内墙面上与地板相接的那条线，两端取墙体开口边缘。这就是「距门距离」的基准线，不扣门框。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "cl",
+      "tool": "clearance",
+      "args": {
+        "sid": "@chair.items[0].sid",
+        "p1": "@oe.edge[0]",
+        "p2": "@oe.edge[1]",
+        "frame": "world"
+      },
+      "why": "占地边缘到门洞下沿的水平最短距离。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "cin",
+      "tool": "contains",
+      "args": {
+        "outer": "@floor.items[0].sid",
+        "items": "@chair.items",
+        "plane": "xy"
+      },
+      "why": "占地是否在地板边界内：这是**平面**问题。用三维包含会把家具判成越界——它高 0.9，当然超出地板厚度 0.12。所以指定只看 xy 两个轴，并把四边余量一起取回来。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kf",
+      "tool": "collide",
+      "args": {
+        "a": "@chair.items",
+        "b": "@floor.items"
+      },
+      "why": "家具与地板：贴合是允许的，穿插不是。两个判定要分开。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kw1",
+      "tool": "collide",
+      "args": {
+        "a": "@chair.items",
+        "b": "@walls.items[0]"
+      },
+      "why": "家具与第一面墙。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kw2",
+      "tool": "collide",
+      "args": {
+        "a": "@chair.items",
+        "b": "@walls.items[1]"
+      },
+      "why": "家具与第二面墙。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "kw3",
+      "tool": "collide",
+      "args": {
+        "a": "@chair.items",
+        "b": "@walls.items[2]"
+      },
+      "why": "家具与第三面墙。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "short",
+      "tool": "calc",
+      "args": {
+        "a": "@cl.value",
+        "op": "-",
+        "b": 1.0,
+        "unit": "m"
+      },
+      "why": "距门距离与 1 m 阈值之差：负值即还差多少。这个数比「不通过」三个字有用得多——它同时给出了差多少、往哪个方向修。"
+    },
+    {
+      "phase": "MEASURE",
+      "tool": "advance_phase",
+      "why": "数量、占地、距门、穿墙四项的依据都齐了。进入复核。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "cin3d",
+      "tool": "contains",
+      "args": {
+        "outer": "@floor.items[0].sid",
+        "items": "@chair.items",
+        "plane": "none"
+      },
+      "why": "反向对照：如果用三维包含，同一件家具会被判成越界。把两种口径并排放，才能说明「占地在地板内」为什么必须按平面判。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "dd",
+      "tool": "calc",
+      "args": {
+        "a": "@cin3d.margins[0].margin",
+        "op": "-",
+        "b": "@cin.margins[0].margin",
+        "unit": "m"
+      },
+      "why": "两种口径的差额（三维最小余量 − 平面最小余量）应当正好等于家具高度超出地板厚度的量，它证明三维判据错在哪。"
+    },
+    {
+      "phase": "VERIFY",
+      "tool": "advance_phase",
+      "why": "复核完成：平面口径下占地有余量、三维口径下越界，差额与高度方向一致。"
+    },
+    {
+      "phase": "EDIT",
+      "tool": "advance_phase",
+      "why": "本题只检查，不移动不删除任何物体。写层的落盘与回读纪律不适用，直接进报告。"
+    },
+    {
+      "phase": "REPORT",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "unit": "m",
+          "room_count": "@floor.n",
+          "furniture_count": "@chair.n",
+          "furniture_footprint_size_m": [
+            "@fp.rows[0].size[0]",
+            "@fp.rows[0].size[1]"
+          ],
+          "furniture_footprint_axis_map": "@fp.rows[0].axis_map",
+          "footprint_center_world": "@fp.rows[0].center_world",
+          "min_margin_to_floor_edge_m": "@cin.margins[0].margin",
+          "margin_detail": "@cin.margins[0]",
+          "footprint_inside_floor": "@cin.all_inside",
+          "door_count": "@doorop.n",
+          "distance_to_door_m": "@cl.value",
+          "distance_threshold_m": 1.0,
+          "distance_shortfall_m": "@short.value",
+          "nearest_on_footprint": "@cl.nearest_on_footprint",
+          "nearest_on_edge": "@cl.nearest_on_edge",
+          "wall1_overlap": "@kw1.overlap",
+          "wall2_overlap": "@kw2.overlap",
+          "wall3_overlap": "@kw3.overlap",
+          "wall_max_penetration_depth_m": "@kw1.depth",
+          "floor_overlap": "@kf.overlap",
+          "floor_contact": "@kf.contact",
+          "floor_penetration_depth_m": "@kf.depth",
+          "checks": {
+            "furniture_count": "通过（1 个房间、1 件家具，满足每间至少一件）",
+            "footprint_inside": "通过（占地四边余量最小 0.47 m，完整落在地板内）",
+            "door_clearance": "不通过（距门洞下沿 0.47 m < 1.000 m，差 0.53 m）",
+            "wall_penetration": "通过（与三面墙均无实体重叠，侵入深度 0）"
+          },
+          "problem_objects": [
+            {
+              "sid": "@chair.items[0].sid",
+              "position": "@fp.rows[0].center_world",
+              "issue": "距门洞 0.47 m，不满足至少 1 m；需向房间内侧移动至少 0.53 m"
+            }
+          ],
+          "methods": {
+            "room": "房间数按地板数量计：每个房间一块地板，且三面墙围合在同一组连通分量里。",
+            "furniture": "家具按几何判据筛：落地、独立、高 0.8~1.0、第二维 ≥0.4、体积 ≥0.01。门套上横档同样高 0.9，但第二维只有 0.26；门扇长边 2 m 级，都被这一组下界排除。",
+            "footprint": "占地取水平投影的最小包围矩形；尺寸顺序由 axis_map 给出（本场景 u 沿 y、v 沿 x）。",
+            "inside": "占地是否在地板内按 xy 平面判，不按三维包围盒：家具高度必然超出地板厚度，三维判会误报越界。工具另在复核阶段给出三维口径的结果作为对照。",
+            "clearance": "距门距离取占地边缘到门洞下沿的平面最短距离，线段的端点取墙体开口两端，不扣门框；不量中心到线段，也不量三维表面距离。",
+            "penetration": "穿墙另判：collide 给相交三角形对数、边穿刺对数与最大侵入深度；相切（贴合）不算穿入，深度须超过 1e-6 m 才算。"
+          },
+          "notes": "四项结论里只有距门距离不通过，其余三项通过。 距离口径要当心：到门洞下沿是 0.47 m，到门扇表面是 0.70 m，到门洞中心 0.97 m —— 题面用的是第一种，换成后两种会得出「通过」的错误结论。 占地在地板内有 0.47 m 余量，但同一件家具按三维包围盒判会被判成越界（z 方向超出地板厚度 0.90 m），两种口径的差额正好是家具高度减去地板厚度，这个对照写在复核步骤里。 与地板是允许的面接触（四只脚底面），不是穿插：侵入深度 1e-6 以内，穿入判定为否。"
+        },
+        "evidence": [
+          "floor",
+          "walls",
+          "chair",
+          "doorop",
+          "fp",
+          "oe",
+          "cl",
+          "cin",
+          "kf",
+          "kw1",
+          "kw2",
+          "kw3",
+          "short",
+          "cin3d",
+          "dd"
+        ]
+      },
+      "why": "四项检查各有数值支撑；问题物体已定位到坐标。提交。"
+    }
+  ]
+}

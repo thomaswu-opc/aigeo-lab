@@ -126,7 +126,13 @@ def t_footprint(bus, sids, frame="auto"):
         }
         if used != "world":
             # 参照系的 u/v 不一定对应世界 x/y。不说清楚，看的人会拿 u 当 x 去算距离。
-            row["axis_map"] = {"u": "xyz"[ku], "v": "xyz"[kv]}
+            # ku/kv 是**参照系里的行号**，不是世界轴编号。早先直接把 "xyz"[ku] 当时世界轴
+            # 输出，结果房间报成 "u=x"，而 u 实际沿 y —— 净宽净深因此整体对调。
+            # 正确的映射是：u 方向 = 基向量 axes[ku]，它最贴近哪个世界轴就是哪个。
+            row["axis_map"] = {
+                "u": "xyz"[int(np.argmax(np.abs(axes[ku])))],
+                "v": "xyz"[int(np.argmax(np.abs(axes[kv])))],
+            }
             if not info.get("is_axis_aligned"):
                 row["note"] = "模型整体未与坐标轴对齐：rect/center/size 在参照系内，center_world 已换回世界"
         rows.append(row)

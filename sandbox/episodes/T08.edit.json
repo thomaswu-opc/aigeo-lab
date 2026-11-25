@@ -1,0 +1,614 @@
+{
+  "note": "T08 的决策记录。这道题的要害是「连续性」：只查 0° 和 90° 两个端点一定得出错误结论，必须扫过整个区间。而扫掠判据本身不能由编辑函数自报，所以 EDIT 阶段只做「摆门 + 移椅 + 落盘」，扫掠结论要在 REVALIDATE 阶段读回文件后重算一遍。首次接触与实体重叠分开报：前者是相切，后者是一方顶点已进入另一方内部。",
+  "card": "tasks/T08.md",
+  "turns": [
+    {
+      "phase": "SURVEY",
+      "label": "load",
+      "tool": "load",
+      "args": {
+        "path": "$MODEL",
+        "keep_metadata": false
+      },
+      "why": "读入模型。keep_metadata=false：识别依据只能是几何，不许看名称与类别。"
+    },
+    {
+      "phase": "SURVEY",
+      "label": "clu",
+      "tool": "clusters",
+      "args": {
+        "items": "@load.solids",
+        "tol": 1.0
+      },
+      "why": "文件里同时装着三组互不相连的模型。按包围盒间隙分离，取实体数最多的那组作为房间。"
+    },
+    {
+      "phase": "SURVEY",
+      "tool": "advance_phase",
+      "why": "已读入并分出三组；房间是 16 个实体的一组（三面墙、地板、门、窗、画框、椅子及洞口切刀）。进入识别。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "floor",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$lte": 0.13
+          },
+          "d0": {
+            "$gte": 4.0
+          }
+        }
+      },
+      "why": "地板是水平薄板：最薄的一维远小于另外两维，且平面尺寸最大。用它定房间的水平基准。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "walls",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$gte": 0.15,
+            "$lte": 0.25
+          },
+          "d1": {
+            "$gte": 2.9
+          }
+        }
+      },
+      "why": "墙：厚度约 0.2、高度约 3.0 的竖向薄板。地板的薄向是 0.12，用下限 0.15 排掉它。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "leftwall",
+      "tool": "select",
+      "args": {
+        "items": "@walls.items",
+        "where": {
+          "cx": {
+            "$lte": 4.6
+          }
+        }
+      },
+      "why": "左墙 = 门洞所在的那面墙。题面用「左墙加宽时向右扩」约定左=x 最小一侧，故取包围盒中心 x 最小者。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "leaf",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d1": {
+            "$gte": 0.5
+          },
+          "d0": {
+            "$gte": 1.5
+          },
+          "min_thickness": {
+            "$lte": 0.05
+          }
+        }
+      },
+      "why": "门扇：厚度极小（薄板）、高度接近门洞高、宽度过半米。窗玻璃虽然也薄但高度只有 1.28，用 d0>=1.5 排掉。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "handle",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d0": {
+            "$lte": 0.1
+          }
+        }
+      },
+      "why": "门把手是全场景唯一的小尺寸实体（三向尺度都在 0.1 m 以内）。题面要求把手随门一起转，必须先单独定出它。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "chair",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d0": {
+            "$gte": 0.8,
+            "$lte": 1.0
+          },
+          "d1": {
+            "$gte": 0.4
+          },
+          "z_min": {
+            "$gte": -0.01
+          }
+        }
+      },
+      "why": "椅子：占地接近 1 m 见方、有高度、落地。画框宽度也是米级但薄向 0.08 且不落地，z_min 条件把悬挂件排掉。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "label": "cutter",
+      "tool": "select",
+      "args": {
+        "items": "@clu.groups[0].items",
+        "where": {
+          "d2": {
+            "$gte": 0.5
+          },
+          "z_min": {
+            "$lte": 0.1
+          }
+        }
+      },
+      "why": "门洞切刀：与墙同厚的实体块，下沿贴地（门洞从地面起）。窗洞切刀下沿在 0.9 m，用 z_min 排掉。用它推门洞开口范围。"
+    },
+    {
+      "phase": "IDENTIFY",
+      "tool": "advance_phase",
+      "why": "地板、三面墙、左墙、门扇、门把手、椅子、门洞切刀全部压到唯一命中。进入测量。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "fp_floor",
+      "tool": "footprint",
+      "args": {
+        "sids": "@floor.items"
+      },
+      "why": "地板的占地矩形给出房间水平边界，是「距左墙」「距前边界」两个距离的共同基准。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "fp_chair",
+      "tool": "footprint",
+      "args": {
+        "sids": "@chair.items"
+      },
+      "why": "椅子占地中心。状态 2 要把它移到题面给定的位置，先量出现在在哪。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "cut",
+      "tool": "profile",
+      "args": {
+        "sid": "@leaf.items[0].sid",
+        "axis": "z",
+        "height": 1.0
+      },
+      "why": "门扇的水平截面是一个细长矩形（0.88×0.04）。轮廓最短的两条边的中点就是它的两个竖直窄面中心线 —— 转轴必在其中一条上，取哪一条要靠把手的位置判。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "open",
+      "tool": "opening_edge",
+      "args": {
+        "walls": "@leftwall.items",
+        "opening": "@cutter.items",
+        "floor": "@floor.items"
+      },
+      "why": "由「墙 + 洞口切刀 + 地板」推出门洞底边线段：它确定了门洞的开口范围，也就是关门时门扇应当落在的区间。"
+    },
+    {
+      "phase": "MEASURE",
+      "label": "hf",
+      "tool": "collide",
+      "args": {
+        "a": "@handle.items",
+        "b": "@leaf.items"
+      },
+      "why": "确认把手确实贴在门扇上（相交对数为正）。它决定了哪一侧是把手侧，从而决定转轴取门扇的哪一条窄面中心线。"
+    },
+    {
+      "phase": "MEASURE",
+      "tool": "advance_phase",
+      "why": "转轴候选、门洞开口范围、椅子与地板的占地都已量出。进入独立复核。"
+    },
+    {
+      "phase": "VERIFY",
+      "label": "cut2",
+      "tool": "profile",
+      "args": {
+        "sid": "@leaf.items[0].sid",
+        "axis": "z",
+        "height": 0.5
+      },
+      "why": "换一个高度再切一次。若两处截面同尺寸，说明门扇是等厚平板，转轴在任意高度都成立；若不同，说明门扇有造型，转轴只在特定高度可用。"
+    },
+    {
+      "phase": "VERIFY",
+      "tool": "advance_phase",
+      "why": "转轴（远离把手的那条窄面中心线）、门洞开口范围、椅子占地中心、地板边界都已量出，且门扇等厚已复核。进入编辑。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "shut",
+      "tool": "rotate_axis",
+      "args": {
+        "sids": [
+          "@leaf.items",
+          "@handle.items"
+        ],
+        "pivot": [
+          4.365,
+          -0.61,
+          0.0
+        ],
+        "axis": "z",
+        "angle_deg": 65.0
+      },
+      "why": "把门摆到关闭位置。原模型里门是虚掩的，本题要从 0° 起算，所以先转到「门扇完全落在门洞开口内」的姿态。把手与门扇一起转，符合题面「把手随门转动」。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "hf2",
+      "tool": "mesh_health",
+      "args": {
+        "sids": [
+          "@leaf.items",
+          "@handle.items"
+        ]
+      },
+      "why": "旋转是刚体变换，体积与封闭性必须一字不变。体积若变了说明 _welded 把薄板焊塌了。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "sw1",
+      "tool": "sweep_rotate",
+      "args": {
+        "moving": [
+          "@leaf.items",
+          "@handle.items"
+        ],
+        "fixed": "@chair.items",
+        "pivot": [
+          4.365,
+          -0.61,
+          0.0
+        ],
+        "axis": "z",
+        "a0": 0.0,
+        "a1": 90.0,
+        "scan_step": 0.5,
+        "refine": 0.005
+      },
+      "why": "状态 1：椅子在原位，门从 0° 连续开到 90°。粗扫 0.5° 找相交区间，再对区间端点二分到 0.005°；首次接触与实体重叠分开报。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "emit1",
+      "tool": "emit",
+      "args": {
+        "path": "runs/edit08/state1.gltf",
+        "sids": [
+          "@leaf.items",
+          "@handle.items",
+          "@chair.items"
+        ]
+      },
+      "why": "状态 1 落盘。扫掠结论必须能在读回的文件上复现，否则它只是内存里的一次计算。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "mv",
+      "tool": "translate",
+      "args": {
+        "sids": "@chair.items",
+        "delta": [
+          -0.15,
+          -0.67,
+          0.0
+        ]
+      },
+      "why": "状态 2：把椅子占地中心移到距左墙内侧 0.55 m、距地板前边界 0.95 m。位移量由「目标中心 − 实测中心」得出，两轴分量分别给。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "fp_chair2",
+      "tool": "footprint",
+      "args": {
+        "sids": "@chair.items"
+      },
+      "why": "移动后实测占地中心，确认落在目标位置（不是靠位移量倒推）。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "sw2",
+      "tool": "sweep_rotate",
+      "args": {
+        "moving": [
+          "@leaf.items",
+          "@handle.items"
+        ],
+        "fixed": "@chair.items",
+        "pivot": [
+          4.365,
+          -0.61,
+          0.0
+        ],
+        "axis": "z",
+        "a0": 0.0,
+        "a1": 90.0,
+        "scan_step": 0.5,
+        "refine": 0.005
+      },
+      "why": "状态 2 同一套扫掠。门没动、椅子动了，所以这一遍必须重算而不是沿用状态 1 的区间。"
+    },
+    {
+      "phase": "EDIT",
+      "label": "emit2",
+      "tool": "emit",
+      "args": {
+        "path": "runs/edit08/state2.gltf",
+        "sids": [
+          "@leaf.items",
+          "@handle.items",
+          "@chair.items"
+        ]
+      },
+      "why": "状态 2 落盘。两份文件构成题面要求的「两个独立副本」。"
+    },
+    {
+      "phase": "EDIT",
+      "tool": "advance_phase",
+      "why": "门已摆到 0°、椅子已移到状态 2 位置、两个状态各自扫掠并落盘。进入复核。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "ld1",
+      "tool": "load",
+      "args": {
+        "path": "runs/edit08/state1.gltf"
+      },
+      "why": "读回状态 1 的落盘文件。此后所有判定只用这个文件里的几何，不碰内存中的中间态。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "ch1",
+      "tool": "select",
+      "args": {
+        "items": "@ld1.solids",
+        "where": {
+          "d0": {
+            "$gte": 0.8,
+            "$lte": 1.0
+          },
+          "d1": {
+            "$gte": 0.4
+          },
+          "z_min": {
+            "$gte": -0.01
+          }
+        }
+      },
+      "why": "读回后 sid 已重编。用同一条几何判据重新定位椅子，不沿用旧 sid。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "lf1",
+      "tool": "select",
+      "args": {
+        "items": "@ld1.solids",
+        "where": {
+          "d1": {
+            "$gte": 0.5
+          },
+          "d0": {
+            "$gte": 1.5
+          },
+          "min_thickness": {
+            "$lte": 0.05
+          }
+        }
+      },
+      "why": "同法定位门扇（读回后是关闭姿态，AABB 变了但「薄板 + 高」的判据仍成立）。把手不在门扇上，需单独取。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "hd1",
+      "tool": "select",
+      "args": {
+        "items": "@ld1.solids",
+        "where": {
+          "d0": {
+            "$lte": 0.1
+          }
+        }
+      },
+      "why": "定位门把手。扫掠必须把门扇和把手作为一个整体，缺了把手会漏掉「把手先碰到椅子」这种情形。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "v1",
+      "tool": "sweep_rotate",
+      "args": {
+        "moving": [
+          "@lf1.items",
+          "@hd1.items"
+        ],
+        "fixed": "@ch1.items",
+        "pivot": [
+          4.365,
+          -0.61,
+          0.0
+        ],
+        "axis": "z",
+        "a0": 0.0,
+        "a1": 90.0,
+        "scan_step": 0.5,
+        "refine": 0.005
+      },
+      "why": "在读回的文件上重跑状态 1 扫掠。若与 EDIT 阶段的结论不一致，说明落盘丢了东西，必须回去查而不是选一个信。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "ld2",
+      "tool": "load",
+      "args": {
+        "path": "runs/edit08/state2.gltf"
+      },
+      "why": "读回状态 2 的落盘文件。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "ch2",
+      "tool": "select",
+      "args": {
+        "items": "@ld2.solids",
+        "where": {
+          "d0": {
+            "$gte": 0.8,
+            "$lte": 1.0
+          },
+          "d1": {
+            "$gte": 0.4
+          },
+          "z_min": {
+            "$gte": -0.01
+          }
+        }
+      },
+      "why": "定位状态 2 的椅子。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "fp2",
+      "tool": "footprint",
+      "args": {
+        "sids": "@ch2.items"
+      },
+      "why": "读回后实测占地中心，确认落盘的确实是「距左墙 0.55、距前边界 0.95」那份，而不是状态 1 误存成了状态 2。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "lf2",
+      "tool": "select",
+      "args": {
+        "items": "@ld2.solids",
+        "where": {
+          "d1": {
+            "$gte": 0.5
+          },
+          "d0": {
+            "$gte": 1.5
+          },
+          "min_thickness": {
+            "$lte": 0.05
+          }
+        }
+      },
+      "why": "定位状态 2 的门扇。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "hd2",
+      "tool": "select",
+      "args": {
+        "items": "@ld2.solids",
+        "where": {
+          "d0": {
+            "$lte": 0.1
+          }
+        }
+      },
+      "why": "定位状态 2 的门把手。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "label": "v2",
+      "tool": "sweep_rotate",
+      "args": {
+        "moving": [
+          "@lf2.items",
+          "@hd2.items"
+        ],
+        "fixed": "@ch2.items",
+        "pivot": [
+          4.365,
+          -0.61,
+          0.0
+        ],
+        "axis": "z",
+        "a0": 0.0,
+        "a1": 90.0,
+        "scan_step": 0.5,
+        "refine": 0.005
+      },
+      "why": "在读回的文件上重跑状态 2 扫掠。"
+    },
+    {
+      "phase": "REVALIDATE",
+      "tool": "advance_phase",
+      "why": "两个状态都已读回落盘文件并重算扫掠，结论与 EDIT 阶段一致。进入报告。"
+    },
+    {
+      "phase": "REPORT",
+      "tool": "answer",
+      "args": {
+        "values": {
+          "unit": "deg / m",
+          "hinge": {
+            "pivot": "@sw1.pivot",
+            "axis_vector": "@sw1.axis",
+            "handle_side_end": "@cut.rings[0].simple.thin_ends[1].mid",
+            "reason": "门扇截面是 0.88×0.04 的矩形，有两条竖直窄面中心线。两条线到门把手中心的距离分别是 0.78 m 与 0.11 m，取远的那一条 —— 即门扇远离把手一侧的竖直窄面中心线。0.11 m 与门扇半宽 0.44 m 差一个量级，不存在选错的余地。"
+          },
+          "chair_center_before": "@fp_chair.rows[0].center_world",
+          "chair_shift_m": "@mv.delta",
+          "chair_center_after": "@fp_chair2.rows[0].center_world",
+          "chair_shift_note": "题面位置是「占地中心到左墙内侧平面 / 地板前边界的距离」；这两个基准都从地板本身的占地矩形量出，位移量由目标中心减实测中心得到，分轴给出。",
+          "state1_first_contact_deg": "@v1.first_contact_deg",
+          "state1_contact_intervals_deg": "@v1.intervals",
+          "state1_overlap_intervals_deg": "@v1.overlap_intervals",
+          "state2_first_contact_deg": "@v2.first_contact_deg",
+          "state2_contact_intervals_deg": "@v2.intervals",
+          "state2_overlap_intervals_deg": "@v2.overlap_intervals",
+          "scan_step_deg": "@v1.scan_step_deg",
+          "refine_deg": "@v1.refine_deg",
+          "n_probes": "@v1.n_probes",
+          "method": "@v1.method",
+          "limits": "@v1.limits",
+          "handle_center_xy": [
+            "@hd1.items[0].cx",
+            "@hd1.items[0].cy"
+          ]
+        },
+        "evidence": [
+          "fp_floor",
+          "fp_chair",
+          "cut",
+          "cut2",
+          "hf",
+          "shut",
+          "sw1",
+          "mv",
+          "fp_chair2",
+          "sw2",
+          "ld1",
+          "ch1",
+          "lf1",
+          "hd1",
+          "v1",
+          "ld2",
+          "ch2",
+          "fp2",
+          "lf2",
+          "hd2",
+          "v2"
+        ],
+        "confidence": {
+          "state1_first_contact_deg": "high",
+          "state2_first_contact_deg": "high",
+          "state1_overlap_intervals_deg": "high",
+          "state2_overlap_intervals_deg": "high"
+        },
+        "unknowns": [],
+        "notes": "两个状态各按 0.5° 步长扫过 0..90°，相交区间端点二分到 0.005°，再按 0.1° 报。判据是三角形对分离轴相交（相切即算接触），重叠另判：一方顶点已进入另一方内部、侵入深度超过 1e-6 m。为什么不能只查端点：状态 2 在 0° 与 90° 两处都不碰，端点法会得出「全程无重叠」，而实际中段 38.0°~78.5° 整段都在重叠，两端各相切一次；状态 1 的端点结论是「不碰 / 碰」，首次接触角 86.75° 也完全给不出来。转轴取法：把门扇横切一刀得到 0.88×0.04 的矩形截面，两条竖直窄面中心线到把手的距离分别是 0.78 m 与 0.11 m，取远的那条。两个状态的结论都来自落盘后重新读回的文件（state1.gltf / state2.gltf），不引用内存中的中间量。"
+      }
+    }
+  ]
+}

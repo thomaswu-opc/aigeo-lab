@@ -47,6 +47,9 @@ def main():
     ap.add_argument("--rot-z", type=float, default=0.0)
     ap.add_argument("--scale", type=float, default=1.0)
     ap.add_argument("--pivot", default="bbox", choices=["bbox", "origin"])
+    # 绕指定竖轴旋转。第 01-4 题要求绕「地板前左角」的竖直轴转 90°，
+    # bbox 中心不是那个角，origin 也不是（房间不在原点），只能显式给点。
+    ap.add_argument("--pivot-xy", default="", help='绕 (x,y) 的竖直轴转，如 "4.6,-2"')
     ap.add_argument("--seed", type=int, default=7)
     a = ap.parse_args()
     if not os.path.exists(a.src):
@@ -55,6 +58,9 @@ def main():
     solids, meta = world.load(a.src)          # 已经做过单位裁决，坐标系=米
     allP = np.vstack([s.P for s in solids])
     pivot = allP.mean(0) if a.pivot == "bbox" else np.zeros(3)
+    if a.pivot_xy:
+        px, py = [float(v) for v in a.pivot_xy.replace("，", ",").split(",")[:2]]
+        pivot = np.array([px, py, 0.0])
     if a.rot_z:
         R, t = rot_z(a.rot_z, pivot)
         for s in solids:
