@@ -326,20 +326,33 @@ class LLMPolicy(Policy):
         if not self.ready:
             raise RuntimeError("没有可用的 API key：请设 %s 或传 --api-key"
                                % _PROVIDER_ENV.get(self.provider, ("", "LLM_API_KEY"))[1])
-        data = self._post(payload)
-        msg = data["choices"][0]["message"]
-        self.calls.append({"turn": ctx["turn"], "phase": ctx["phase"],
-                           "usage": data.get("usage"), "raw": msg})
-        tcs = msg.get("tool_calls") or []
-        if not tcs:
+        # 正文作答的补救：模型有时把结论直接写在 content 里、不给 tool_call，
+        # 旧行为是一次就判 declare_insufficient —— 实测跑出了正确答案 65.0° 却整轮判失败。
+        # 这不是「证据不足」，是「没走接口」：回它一句「用工具提交」再问一次，只重试一次。
+        tcs, txt = [], ""
+        for attempt in range(2):
+            data = self._post(payload)
+            msg = data["choices"][0]["message"]
+            self.calls.append({"turn": ctx["turn"], "phase": ctx["phase"],
+                               "usage": data.get("usage"), "raw": msg})
+            tcs = msg.get("tool_calls") or []
+            if tcs:
+                break
             txt = (msg.get("content") or "").strip()
             try:
-                j = json.loads(txt)
-                return j
+                return json.loads(txt)          # 有的模型直接回一段 JSON，那也认
             except Exception:
-                return {"tool": "declare_insufficient",
-                        "why": "模型未给出工具调用：" + txt[:200],
-                        "missing": ["可执行动作"]}
+                pass
+            if attempt == 0:
+                payload = dict(payload, messages=payload["messages"] + [
+                    {"role": "assistant", "content": txt[:1200]},
+                    {"role": "user", "content":
+                     "你把结论写在正文里了，但沙盒只接受**工具调用**。已得结论就调用 answer 提交"
+                     "（values 放结论、evidence 放步骤 id）；还缺证据就继续调用工具。不要再用正文作答。"}])
+                continue
+            return {"tool": "declare_insufficient",
+                    "why": "两次都没有给出工具调用：" + txt[:200],
+                    "missing": ["可执行动作"]}
         fn = tcs[0]["function"]
         # 模型偶尔吐出非法 JSON（少个引号、多个逗号），直接 json.loads 会让整轮抛异常退出。
         # 这不是「证据不足」，是格式问题：当成可修正的参数错误报回去，比崩掉整个 run 好。
@@ -350,10 +363,10 @@ class LLMPolicy(Policy):
         except Exception:
             self.calls.append({"turn": ctx["turn"], "phase": ctx["phase"],
                                "bad_args": str(raw_args)[:300]})
-            return {"tool": "declare_insufficient",
-                    "why": "上一步的工具参数不是合法 JSON（%s）。请照 schema 重新给一个 JSON 对象，"
-                           "字符串要带引号、对象之间要带逗号。" % str(raw_args)[:120],
-                    "missing": ["合法的工具参数"]}
+            # 不要直接 declare_insufficient —— 那会让一次格式错误变成「证据不足」的结论，
+            # 整个任务白跑。交给编排层记一条可修正的错误步骤，下一轮它自己重发。
+            return {"tool": "__invalid_args__",
+                    "why": "工具参数不是合法 JSON：%s" % str(raw_args)[:160]}
         name = fn["name"]
         if name == "advance_phase":
             return {"tool": "advance_phase", "why": args.get("reason", "")}

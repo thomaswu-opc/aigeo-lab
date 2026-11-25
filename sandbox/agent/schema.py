@@ -14,6 +14,8 @@
 """
 import inspect
 import json
+import os
+import re
 
 from core.runtime import TOOLS, schema
 
@@ -122,6 +124,95 @@ CONTROL = [
 ]
 
 
+# ------------------------------------------------------------ 参数说明瘦身
+# 实测：一次 MEASURE 调用的 prompt 里，工具 schema 占 74%（参数说明 15.0k 字符 +
+# 工具描述 6.0k 字符）。钱花在「教模型怎么调工具」上，不在「它看到的东西」上。
+# 所以这里对**发给模型的渲染结果**做精简，源码里的完整说明一个字不动 ——
+# 页面、README、评审看到的是原文，模型看到的是能做出正确选择的最小信息。
+# 想对照原文：WB_SCHEMA=full 启动即可回到精简前的渲染。
+_TERSE = os.environ.get("WB_SCHEMA", "terse").lower() != "full"
+_DEFAULT_RE = re.compile(r"[（(]默认[^）)]*[）)]")
+
+
+def _split_top(text, seps="，,；;。"):
+    """按标点切句，但**不切开括号内部** —— 否则「（mm，默认 15）」会被切成两半，
+    单位那半截被丢掉，模型就可能把 0.015 当 15 传进来。"""
+    out, buf, depth = [], [], 0
+    for ch in text:
+        if ch in "（(":
+            depth += 1
+        elif ch in "）)":
+            depth = max(0, depth - 1)
+        if ch in seps and depth == 0:
+            out.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    out.append("".join(buf))
+    return out
+
+
+def _brief(desc, n=26):
+    """把「类型 + 长说明」压成「类型 + 一句话」，保留单位与默认值。
+
+    "list  实体清单，或引用字符串（如 @load.solids、@clu.groups[0].items）"
+      → "list 实体清单"
+    "float 连通阈值（mm，默认 15）：装配件之间的功能缝…"
+      → "float 连通阈值（mm）（默认 15）"
+    单位与默认值都必须留：丢了前者会把 mm 当 m，丢了后者会多传一遍参数。
+    """
+    if not _TERSE or not isinstance(desc, str):
+        return desc
+    typ, _, rest = desc.strip().partition(" ")
+    rest = rest.strip()
+    if not rest:
+        return typ
+    unit = dflt = ""
+    m = re.search(r"[（(]([^）)]*默认[^）)]*)[）)]", rest)
+    if m:
+        inner = m.group(1)
+        pre = inner.split("默认")[0].strip(" ，,、")
+        val = inner.split("默认", 1)[1].strip(" ：:，,、")
+        if pre:
+            unit = "（%s）" % pre
+        if val:
+            dflt = "（默认 %s）" % val
+        rest = rest.replace(m.group(0), unit)
+    body = re.sub(r"[（(][^）)]{16,}[）)]", "", rest)
+    out = ""
+    for part in _split_top(body):
+        part = part.strip()
+        if not part:
+            continue
+        if out and len(out) + len(part) + 1 > n:
+            break
+        out = (out + "，" + part) if out else part
+    if not out:
+        out = body.strip()[:n]
+    if out.count("（") > out.count("）") and "（" in out:
+        out = out[: out.rindex("（")].rstrip("，,、 ")
+    if len(out) > n:
+        out = out[:n].rstrip("，,、 ") + "…"
+    return (typ + " " + out).strip() + dflt
+
+
+def _fields(returns, n=46):
+    """把「返回：{a, b, [c]…}」压成字段名清单 —— 模型要的是"能拿到什么"，不是散文。
+
+    取花括号里第一层的键名，超过预算就截断。字段名本身就是契约，去掉它等于让模型
+    猜返回结构（它就会去重新 load 一遍）。
+    """
+    if not _TERSE or not isinstance(returns, str):
+        return returns
+    t = returns.strip()
+    m = re.search(r"[{（(](.*)[}）)]", t)
+    body = m.group(1) if m else t
+    keys = [k.strip() for k in re.split(r"[,，、]", body) if k.strip()]
+    keys = [k.split(":")[0].split("=")[0].strip(" []") for k in keys]
+    out = "{" + ", ".join(k for k in keys if k and not k.startswith("…")) + "}"
+    return out[:n] if len(out) > n else out
+
+
 def tool_specs(only=None):
     """返回 OpenAI function-calling 规格。only 可限定子集（用于阶段门控）。"""
     out = []
@@ -133,16 +224,21 @@ def tool_specs(only=None):
         props, req = {}, []
         for pname, pdesc in t["parameters"].items():
             ty = pdesc.split(None, 1)[0].rstrip("：:").lower()
-            props[pname] = {"type": _TYPE.get(ty, "string"), "description": pdesc}
+            props[pname] = {"type": _TYPE.get(ty, "string"), "description": _brief(pdesc)}
             if ty.startswith("list"):
                 # 集合参数必须同时接受「引用字符串」。只声明 array 时模型没法写 @load.solids，
                 # 只能把整份清单逐字复制进参数 —— 实测它复制了 19 个 sid，既贵又易错。
                 # 引用由编排层解析，模型不必搬运数据。
                 props[pname] = {
                     "anyOf": [{"type": "array", "items": {}}, {"type": "string"}],
-                    "description": pdesc + "。也可以直接写引用字符串，如 "
-                                   "\"@load.solids\"、\"@clu.groups[0].items\"、\"@thin.items\"；"
-                                   "引用指向已完成步骤的返回值，不必自己复制清单内容。"}
+                    "description": _brief(pdesc) + (
+                        ("；或写 @步骤.field 引用" if _TERSE else
+                         "。也可以直接写引用字符串，如 \"@load.solids\"、\"@clu.groups[0].items\"；"
+                         "引用指向已完成步骤的返回值，不必自己复制清单内容。")
+                        if ("不要写" not in (pdesc or "")) and (
+                            "引用" in (pdesc or "") or "@" in (pdesc or "")
+                            or pname in ("items", "sids", "walls", "solids", "targets"))
+                        else "")}
             sp = sig.parameters.get(pname)
             if sp is not None and sp.default is inspect.Parameter.empty:
                 req.append(pname)
@@ -151,16 +247,25 @@ def tool_specs(only=None):
         #   label    —— 语义标签，决定后续引用 @label.field 的稳定性
         #   expect_n —— 声明的预期命中数，不符时编排层判失败并触发自救
         # 不给 LLM 这三项，RECOVER 机制在 LLM 路径上等于不存在 —— 这是必须补的口子。
-        props["why"] = {"type": "string",
-                        "description": "一句话说明这次调用要确认什么（会写进账本）"}
-        props["label"] = {"type": "string",
-                          "description": "本步的语义标签（如 win / leaf），供后续用 @label.field 引用"}
-        props["expect_n"] = {"type": "integer",
-                             "description": "预期返回的条目数；不符时编排层判定失败并进入自救。计数类工具才需要"}
+        props["why"] = {"type": "string", "description": _brief(
+            "一句话说明这次调用要确认什么（会写进账本）", 20)}
+        props["label"] = {"type": "string", "description": _brief(
+            "本步的语义标签（如 win / leaf），供后续用 @label.field 引用", 22)}
+        props["expect_n"] = {"type": "integer", "description": _brief(
+            "预期返回的条目数；不符时编排层判定失败并进入自救。计数类工具才需要", 24)}
+        if _TERSE:
+            # 前置条件不进 schema：写错会被门控拒（拒绝信息本身就带「这一阶段的判定是什么」），
+            # 比事先读一段规则更省。失败时的降级提示保留（它防的是"信了一个不可信的量"）。
+            # 工具的一句话用途压到 44 字：够回答「这工具干嘛的」，不够讲它的来历。
+            # 散文式背景（"例如把某实体的测量行对齐到最终报告…"）对选择没有增量。
+            desc = "%s｜失败时：%s｜返回：%s" % (
+                _brief(t["description"], 44), _brief(t["degrade"], 30), _fields(t["returns"]))
+        else:
+            desc = "%s｜前置条件：%s｜失败时：%s｜返回：%s" % (
+                t["description"], t["preconditions"], t["degrade"], t["returns"])
         out.append({"type": "function", "function": {
             "name": t["name"],
-            "description": "%s｜前置条件：%s｜失败时：%s｜返回：%s" % (
-                t["description"], t["preconditions"], t["degrade"], t["returns"]),
+            "description": desc,
             "parameters": {"type": "object", "properties": props, "required": req,
                            "additionalProperties": False}}})
     return out

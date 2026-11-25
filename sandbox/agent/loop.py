@@ -235,6 +235,17 @@ class Loop:
     # ------------------------------------------------------------ 动作分发
 
     def _dispatch(self, act):
+        # 参数不是合法 JSON：这是一个可当场修正的机械错误，记一步、不动阶段、不改状态。
+        # 之前这里会走 declare_insufficient，等于把「格式写错」判成「证据不足」，
+        # 一次笔误就让整道题白跑（实测 A/B 里就丢过一次 OK）。
+        if act.get("tool") == "__invalid_args__":
+            self.steps.append({"id": "s%d" % self.turn, "phase": self.phase,
+                               "tool": "（参数非法）", "error": act.get("why", "")[:300],
+                               "hint": "参数要写成合法 JSON：字符串带引号、对象之间带逗号、"
+                                       "列表用方括号。改完重发同一个调用即可。"})
+            self.L.append("bad_args", {"turn": self.turn, "why": act.get("why", "")[:300]})
+            return
+
         name = act.get("tool") or act.get("action")
         why = act.get("why", "")
         if name == "advance_phase":
