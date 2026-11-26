@@ -270,6 +270,20 @@ table.task td{padding:9px 12px;border-bottom:1px solid var(--line2);font-size:12
   .gstep{display:inline-block;margin-left:6px;font:10px var(--mono);padding:1px 6px;border-radius:4px;
     background:#eef2f7;color:var(--ink2);cursor:pointer}
   .gstep:hover{background:#e2e9f2}
+  /* —— 步骤时间线（随执行的 tool 在三维上叠加标注）—— */
+  #markbar{margin-top:4px}
+  #markbar:empty{display:none}
+  .markbar{display:flex;align-items:center;gap:6px;margin-top:6px;padding:4px 6px;
+           border:1px solid var(--line);border-radius:6px;background:#fbfcfe;flex-wrap:wrap}
+  .markbar .mt{font-size:10.5px;color:var(--ink);font-family:var(--mono)}
+  .markbar .mw{font-size:10px;color:var(--ink2);flex:1;min-width:0;overflow:hidden;
+               text-overflow:ellipsis;white-space:nowrap}
+  .markbar input[type=range]{flex:1;min-width:70px;accent-color:var(--survey)}
+  .markbar button{font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--line);
+                  background:#fff;cursor:pointer;color:var(--ink)}
+  .markbar button:hover{border-color:#c3ccd6}
+  .markbar button.on{border-color:var(--survey);color:var(--survey);background:#eef6fb}
+  .markbar .mcnt{font-size:10px;color:var(--dim);font-family:var(--mono)}
   #shot{display:block;width:100%}
   .navb{position:absolute;top:50%;transform:translateY(-50%);width:26px;height:26px;border-radius:50%;
         border:1px solid var(--line);background:rgba(255,255,255,.94);cursor:pointer;font-size:13px;color:var(--ink2)}
@@ -741,6 +755,8 @@ async function loadRun(tag, keepComposer){
   }
   S.run = run; S.events = run.events||[]; S.since = S.events.length;
   S.ask = (run.meta||{}).card_text || ""; S.brief = (run.meta||{}).brief || null;
+  // 切换 run：marks 是几何文件里的，run 变了旧指针就没意义，清零让 initMarks 重设
+  VIEW.markStep = -1; VIEW.userMoved = false; VIEW.focusSids = null;
   const st = run.steps||[];
   const hasRead = st.some(x=>["section","profile","proj_area","fit_sphere","sphere_region","contact_area","contains","solve_section_height","calc"].includes(x.tool));
   const hasWrite = st.some(x=>x.tool==="emit") || (run.events||[]).some(e=>e.kind==="geometry_edited");
@@ -1003,6 +1019,7 @@ function renderRight(){
       <button><b>几何画面</b><span>${geoCount()}</span><i>▾</i></button>
       <div class="body">
         <div id="geotools"></div>
+        <div id="markbar"></div>
         <div id="viewwrap"><div id="view3d"></div></div>
         <div class="cap" id="cap"></div><div class="yaws" id="yaws"></div>
       </div>
@@ -1252,6 +1269,9 @@ const VIEW = {
   scene:null, camera:null, renderer:null, meshes:[], raf:0, host:null,
   tag:null, key:"", dirty:false, raycaster:null, hover:null, sel:null,
   bg: new THREE.Color(0xf7f8fa),
+  // —— 步骤标注叠加 —— marksGroup 是与实体同一旋转坐标系（mesh.rotation.x=-90°）下的组，
+  // 这样 marks 里的世界坐标（z-up）经过同一个旋转后，与实体几何对齐。
+  marksGroup:null, markSprites:[], markStep:-1, markOn:true, follow:true, userMoved:false,
 };
 
 function viewReady(){ return typeof THREE !== "undefined"; }
@@ -1369,6 +1389,8 @@ function bindViewerInput(dom, host){
   dom.addEventListener("pointermove", e=>{
     const s = sph();
     if(dragging){
+      // 用户手动操作 → 禁用自动跟随（followFocus 不再在几何更新时覆盖用户视角）
+      VIEW.userMoved = true;
       const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
       if(dragging===1){ s.theta -= dx*0.008; s.phi -= dy*0.008; }
       else{
@@ -1384,7 +1406,11 @@ function bindViewerInput(dom, host){
     }
   });
   dom.addEventListener("pointerleave", ()=>{ if(VIEW.hover){ VIEW.hover=null; paintHover(); } });
-  dom.addEventListener("wheel", e=>{ e.preventDefault(); sph().r *= (1 + Math.sign(e.deltaY)*0.12); apply(); }, {passive:false});
+  dom.addEventListener("wheel", e=>{
+    e.preventDefault();
+    VIEW.userMoved = true;
+    sph().r *= (1 + Math.sign(e.deltaY)*0.12); apply();
+  }, {passive:false});
   dom.addEventListener("dblclick", e=>{
     // 双击实体 = 聚焦：镜头移到它中心，半径按它的尺寸定
     const hit = pickAt(e, host);
@@ -1395,8 +1421,256 @@ function bindViewerInput(dom, host){
 /* 把视角拉回「整条长轴」——用按钮调，比让用户自己拖回来可靠 */
 function fitAll(){
   if(!VIEW.old) return;
+  // 全景 = 放弃手动视角，恢复自动跟随焦点
+  VIEW.userMoved = false;
   const bb = new THREE.Box3().setFromObject(VIEW.old);
   if(!bb.isEmpty()) fitCamera(bb);
+}
+
+/* ================================================================ 步骤标注（marks）
+   geom.json.marks = [{step, tool, phase, why, focus[], markers[], lines[], arcs[], planes[]}]
+   每次 refreshGeom 拿到 marks 后调用 applyMarks()，当前步骤指针是 S.markStep（全局索引）。
+   marksGroup 是与实体同一旋转坐标系（rotation.x=-90°）下的组，坐标对齐。 */
+
+function getMarks(){
+  const g = S.geo && S.geo.data;
+  return (g && g.marks) || [];
+}
+
+/* 清掉旧 marks，重建 marksGroup 里的所有图元 */
+function applyMarks(){
+  if(!VIEW.scene) return;
+  // 移除旧组，释放几何资源
+  if(VIEW.marksGroup){
+    VIEW.scene.remove(VIEW.marksGroup);
+    VIEW.marksGroup.traverse(o=>{
+      if(o.geometry) o.geometry.dispose();
+      if(o.material){ if(Array.isArray(o.material)) o.material.forEach(m=>m.dispose()); else o.material.dispose(); }
+    });
+  }
+  VIEW.marksGroup = null;
+  VIEW.markSprites = [];
+  const all = getMarks();
+  if(!VIEW.markOn || !all.length || VIEW.markStep<0) { VIEW.focusSids=null; paintHover(); return; }
+
+  const grp = new THREE.Group();
+  grp.rotation.x = -Math.PI/2;  // z-up → y-up，与实体 mesh 相同
+  VIEW.marksGroup = grp;
+  VIEW.scene.add(grp);
+
+  const mk = all[Math.min(VIEW.markStep, all.length-1)];
+  if(!mk) return;
+
+  // —— 焦点实体高亮（覆盖 paintHover 的 emissive，标记为聚焦）
+  VIEW.focusSids = new Set(mk.focus || []);
+
+  // —— 测量线（distance/clearance/rank/opening_edge）
+  (mk.lines||[]).forEach(L=>{
+    const a=new THREE.Vector3(L.a[0],L.a[1],L.a[2]);
+    const b=new THREE.Vector3(L.b[0],L.b[1],L.b[2]);
+    const geo=new THREE.BufferGeometry().setFromPoints([a,b]);
+    const col=new THREE.Color(L.color||"#ffd166");
+    const mat=new THREE.LineBasicMaterial({color:col,linewidth:2,depthTest:false,transparent:true,opacity:0.95});
+    const line=new THREE.Line(geo,mat);
+    line.renderOrder=10;
+    grp.add(line);
+    // 线中点标签
+    const mid=a.clone().add(b).multiplyScalar(0.5);
+    if(L.label) addLabelSprite(grp, mid, L.label, L.color||"#ffd166");
+  });
+
+  // —— 标记点（markers: witnesses, deepest, edge endpoints）
+  (mk.markers||[]).forEach(M=>{
+    const p=new THREE.Vector3(M.pos[0],M.pos[1],M.pos[2]);
+    const col=new THREE.Color(M.color||"#ffd166");
+    // 小球
+    const sg=new THREE.SphereGeometry(0.04,8,8);
+    const sm=new THREE.MeshBasicMaterial({color:col,depthTest:false,transparent:true,opacity:0.95});
+    const ball=new THREE.Mesh(sg,sm);
+    ball.position.copy(p); ball.renderOrder=11;
+    grp.add(ball);
+    if(M.label) addLabelSprite(grp, p, M.label, M.color||"#ffd166");
+  });
+
+  // —— 角度弧（两根法向 → 从中心出发的短线 + 弧面）
+  (mk.arcs||[]).forEach(A=>{
+    const c=new THREE.Vector3(A.center[0],A.center[1],A.center[2]);
+    const na=new THREE.Vector3(A.n_a[0],A.n_a[1],A.n_a[2]);
+    const nb=new THREE.Vector3(A.n_b[0],A.n_b[1],A.n_b[2]);
+    const col=new THREE.Color(A.color||"#a5d6ff");
+    const L=0.55;
+    // 两根法向线
+    const e1=c.clone().add(na.clone().multiplyScalar(L));
+    const e2=c.clone().add(nb.clone().multiplyScalar(L));
+    [[c,e1],[c,e2]].forEach(([a,b])=>{
+      const geo=new THREE.BufferGeometry().setFromPoints([a,b]);
+      const mat=new THREE.LineBasicMaterial({color:col,linewidth:1.5,depthTest:false,transparent:true,opacity:0.8});
+      const line=new THREE.Line(geo,mat); line.renderOrder=10;
+      grp.add(line);
+    });
+    // 弧线（QuadraticBezierCurve）
+    const midDir=na.clone().add(nb).normalize().multiplyScalar(L*0.6);
+    const mid=c.clone().add(midDir);
+    const curve=new THREE.QuadraticBezierCurve3(e1,mid,e2);
+    const pts=curve.getPoints(16);
+    const ag=new THREE.BufferGeometry().setFromPoints(pts);
+    const am=new THREE.LineBasicMaterial({color:col,linewidth:2,depthTest:false,transparent:true,opacity:0.95});
+    const arc=new THREE.Line(ag,am); arc.renderOrder=10;
+    grp.add(arc);
+    // 角度标签放在 midDir 方向稍远处
+    const lblP=c.clone().add(midDir.multiplyScalar(1.4));
+    if(A.label) addLabelSprite(grp, lblP, A.label, A.color||"#a5d6ff");
+  });
+
+  // —— 切面（cut_plane/section）：以 normal·p=d 的四边形表示
+  (mk.planes||[]).forEach(P=>{
+    if(!P.normal || P.d==null) return;
+    const n=new THREE.Vector3(P.normal[0],P.normal[1],P.normal[2]).normalize();
+    // 找到与 n 垂直的两个轴
+    const u=new THREE.Vector3(1,0,0);
+    if(Math.abs(n.x)>0.9) u.set(0,1,0);
+    u.cross(n).normalize();
+    const v=new THREE.Vector3().crossVectors(n,u).normalize();
+    // 四边形：d*n ± u*2 ± v*2
+    const c=n.clone().multiplyScalar(P.d);
+    const H=2.5;
+    const corners=[
+      c.clone().addScaledVector(u,-H).addScaledVector(v,-H),
+      c.clone().addScaledVector(u, H).addScaledVector(v,-H),
+      c.clone().addScaledVector(u, H).addScaledVector(v, H),
+      c.clone().addScaledVector(u,-H).addScaledVector(v, H),
+    ];
+    const pg=new THREE.BufferGeometry();
+    pg.setFromPoints(corners);
+    pg.setIndex([0,1,2, 0,2,3]);
+    pg.computeVertexNormals();
+    const col=new THREE.Color(P.color||"#c792ea");
+    const pm=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.22,
+                                          side:THREE.DoubleSide,depthWrite:false});
+    const plane=new THREE.Mesh(pg,pm); plane.renderOrder=5;
+    grp.add(plane);
+    // 边框
+    const eGeo=new THREE.BufferGeometry().setFromPoints([...corners,corners[0]]);
+    const eMat=new THREE.LineBasicMaterial({color:col,linewidth:1.5,depthTest:false,transparent:true,opacity:0.85});
+    const edge=new THREE.Line(eGeo,eMat); edge.renderOrder=10;
+    grp.add(edge);
+  });
+
+  // 焦点实体高亮：交给 paintHover 统一处理（它读 VIEW.focusSids）
+  paintHover();
+}
+
+/* 在 marksGroup 里加一个 CSS2D 风格的 Sprite 标签 */
+function addLabelSprite(grp, pos, text, color){
+  const cv=document.createElement("canvas");
+  const ctx=cv.getContext("2d");
+  const fs=22;
+  ctx.font=`bold ${fs}px monospace`;
+  const w=Math.max(60, ctx.measureText(text).width+16), h=fs+12;
+  cv.width=w; cv.height=h;
+  ctx.fillStyle="rgba(30,35,42,0.88)";
+  ctx.beginPath(); ctx.roundRect(0,0,w,h,6); ctx.fill();
+  ctx.font=`bold ${fs}px monospace`;
+  ctx.fillStyle=color||"#ffd166";
+  ctx.textBaseline="middle"; ctx.textAlign="center";
+  ctx.fillText(text, w/2, h/2+1);
+  const tex=new THREE.CanvasTexture(cv);
+  tex.minFilter=THREE.LinearFilter;
+  const sm=new THREE.SpriteMaterial({map:tex, depthTest:false, transparent:true});
+  const sp=new THREE.Sprite(sm);
+  sp.position.copy(pos);
+  sp.scale.set(w/220, h/220, 1);   // 大约 0.27 m 宽
+  sp.renderOrder=12;
+  grp.add(sp);
+  VIEW.markSprites.push(sp);
+}
+
+/* 切到某一步：更新标注 + 相机跟随焦点实体 */
+function setMarkStep(i){
+  const all=getMarks();
+  if(!all.length) return;
+  VIEW.markStep=Math.max(0, Math.min(i, all.length-1));
+  applyMarks();
+  renderMarkbar();
+  if(VIEW.follow) followFocus();
+}
+
+/* 相机跟随：找焦点实体，包围盒居中 */
+function followFocus(){
+  const all=getMarks();
+  if(!all.length || VIEW.markStep<0) return;
+  const mk=all[Math.min(VIEW.markStep, all.length-1)];
+  const focus=mk.focus||[];
+  if(!focus.length) return;
+  // 收集这些 sid 对应的 mesh 的包围盒
+  const bb=new THREE.Box3();
+  let found=false;
+  focus.forEach(sid=>{
+    const m=VIEW.meshes.find(x=>x.userData.sid===sid);
+    if(m){ bb.expandByObject(m); found=true; }
+  });
+  if(!found) return;
+  if(bb.isEmpty()) return;
+  focusCameraOn(bb);
+}
+
+/* 把相机移动到某个包围盒：焦点在视口中央，距离按包围盒最大维度定 */
+function focusCameraOn(bb){
+  const sz=bb.getSize(new THREE.Vector3());
+  const c=bb.getCenter(new THREE.Vector3());
+  // 视点中心用焦点包围盒中心（不是整个场景）
+  VIEW.sph.target.copy(c);
+  // 距离：最大维度 / tan(halfFov) * 1.2 给一点余量
+  const maxDim=Math.max(sz.x, sz.y, sz.z);
+  const fov=VIEW.camera.fov*Math.PI/180;
+  const hHalf=Math.atan(Math.tan(fov/2)*VIEW.camera.aspect);
+  const need=Math.max(
+    (maxDim/2)/Math.tan(fov/2)*1.25,
+    (maxDim/2)/Math.tan(hHalf)*1.25,
+    2.0  // 最小距离
+  );
+  VIEW.sph.r=Math.max(1.5, need);
+  VIEW.applyCam();
+}
+
+/* 渲染步骤时间线 UI（在 #geotools 后面插入） */
+function renderMarkbar(){
+  const el=$("markbar"); if(!el) return;
+  const all=getMarks();
+  if(!all.length){ el.innerHTML=""; return; }
+  const idx=VIEW.markStep<0?0:VIEW.markStep;
+  const mk=all[idx];
+  const toolLbl=mk?`${mk.tool}`:"—";
+  const whyLbl=mk?esc((mk.why||"").slice(0,70)):"";
+  const phaseLbl=mk?(PGATE[mk.phase]||mk.phase||""):"";
+  el.innerHTML=`
+    <div class="markbar">
+      <button id="mkprev" title="上一步">◀</button>
+      <input type="range" id="mkslider" min="0" max="${all.length-1}" value="${idx}">
+      <button id="mknext" title="下一步">▶</button>
+      <span class="mt">${idx+1}/${all.length}</span>
+      <span class="mt" style="color:var(--survey)">${esc(phaseLbl)}·${esc(toolLbl)}</span>
+      <span class="mw" title="${whyLbl}">${whyLbl}</span>
+      <button id="mkfocus" class="${VIEW.follow?"on":""}" title="相机跟随焦点实体">跟随</button>
+      <button id="mkall" class="${VIEW.markOn?"on":""}" title="显示/隐藏标注">标注</button>
+      <span class="mcnt">${all.length} 步有标注</span>
+    </div>`;
+  $("mkprev").onclick=()=>setMarkStep(VIEW.markStep-1);
+  $("mknext").onclick=()=>setMarkStep(VIEW.markStep+1);
+  $("mkslider").oninput=e=>setMarkStep(+e.target.value);
+  $("mkfocus").onclick=()=>{ VIEW.follow=!VIEW.follow; renderMarkbar(); if(VIEW.follow) followFocus(); };
+  $("mkall").onclick=()=>{ VIEW.markOn=!VIEW.markOn; applyMarks(); renderMarkbar(); };
+}
+
+/* 在 refreshGeom 末尾调用：拿到 marks 后设置初始步骤并渲染时间线 */
+function initMarks(){
+  const all=getMarks();
+  if(all.length && VIEW.markStep<0){
+    VIEW.markStep=all.length-1;  // 默认显示最后一步（最新）
+  }
+  if(!all.length) VIEW.markStep=-1;
+  renderMarkbar();
+  applyMarks();
 }
 
 function resizeViewer(){
@@ -1439,11 +1713,14 @@ function hoverAt(e, host){
 }
 
 function paintHover(){
+  const fs = VIEW.focusSids;   // 当前步骤的焦点实体集合（由 applyMarks 设置）
   VIEW.meshes.forEach(m=>{
     const u = m.userData;
     const isSel = u.sid === VIEW.sel, isHov = u.sid === VIEW.hover;
-    m.material.emissive.setHex(isSel ? 0x2f6fd0 : (isHov ? 0x6b7a90 : 0x000000));
-    m.material.emissiveIntensity = isSel ? 0.55 : (isHov ? 0.28 : 0);
+    const isFocus = fs && fs.has(u.sid);
+    // 优先级：选中 > 悬停 > 焦点步骤高亮
+    m.material.emissive.setHex(isSel ? 0x2f6fd0 : (isHov ? 0x6b7a90 : (isFocus ? 0x1a5fa0 : 0x000000)));
+    m.material.emissiveIntensity = isSel ? 0.55 : (isHov ? 0.28 : (isFocus ? 0.42 : 0));
     // 结构体（墙/地/顶）半透明，否则从外面看不见里面的家具 ——
     // 这是快照时代最容易被误读的一点：「房间里看着是空的」其实是被墙挡了。
     // 结构体分「背面剔除」和「真半透明」两档：
@@ -1616,7 +1893,18 @@ async function refreshGeom(){
     VIEW.key = S.geo.mtime;
     if(!VIEW.renderer) initViewer();
     if(VIEW.renderer) applyGeom(S.geo.data, true);   // 实时更新不改机位
+    // 几何更新后同步 marks：marks 里包含每步标注；如果用户没手动选过，
+    // 默认切到最新一步（跟随最新 tool 的可视化）
+    if(!VIEW.userMoved){
+      const all = getMarks();
+      if(all.length) VIEW.markStep = all.length-1;
+    }
+    initMarks();
   }
+  // 拿到几何就撤掉「正在取几何」遮罩 —— 之前漏了这一步，导致三维其实画出来了、
+  // 却被半透明白色层盖住，看起来就是「没有三维画面」。
+  const gl = $("geoloading"); if(gl) gl.remove();
+  const ov = $("geooverlay"); if(ov) ov.remove();
   const g=S.geo;
   const cap=$("cap");
   if(cap && g && g.data) cap.innerHTML = `<b>${esc(g.data.note||"进行中")}</b>第 ${g.data.turn??"—"} 轮 · ${g.data.n_solids} 实体 · ${(g.data.n_tri/1000).toFixed(1)}k 面 · 随账本实时更新`;
@@ -1674,6 +1962,8 @@ function renderView(){
   }
   if(S.geo.data){
     if(VIEW.key !== S.geo.mtime){ VIEW.key = S.geo.mtime; applyGeom(S.geo.data); }
+    // 非实时路径（载入已完成的运行 / 单文件导出）：拿到几何就建 marks + 时间线
+    initMarks();
     const d = S.geo.data;
     if(cap) cap.innerHTML = `<b>${esc(d.note||"")}</b>${d.n_solids} 实体 · ${(d.n_tri/1000).toFixed(1)}k 三角面 · 拖=转 滚=缩 右键/Shift=平移 双击=聚焦`;
   }

@@ -50,6 +50,104 @@ def sha(path, n=16):
     return h.hexdigest()[:n]
 
 
+def _card_task_text(card_text):
+    """从任务卡里抽出「题目原文」段（自然语言整理用）。
+
+    卡面是「题目原文（赛题 Task XX）」开头，后面还跟输入/判据/字段名/约束那些
+    脚手架段 —— 那些是给 agent 用的，不该灌给整理器（否则它照着字段名表写，
+    或把「答案字段名」当题目）。抽不到就整卡去头尾。
+    """
+    import re as _re
+    m = _re.search(r"## 题目原文[^\n]*\n(.*?)(?=\n## |\Z)", card_text, _re.S)
+    if m:
+        return m.group(1).strip()
+    return card_text.strip()[:1200]
+
+
+def narrate_answer(raw, ans, steps, model, kind_label=None):
+    """跑完之后用 LLM 把答案整理成自然语言。
+
+    这不是解题、不是再算一遍，是组织语言：拿题目原文 + 已交答案 + 关键步骤的意图，
+    让 LLM 写一段直接回答题目的话。temperature=0（同一答案必须得到同一段话），
+    一次调用，不重试 —— 整理是锦上添花，失败不能拖累已经跑完的任务。
+
+    返回 {ok, text, note}；不抛异常。
+    """
+    values = (ans or {}).get("values") or {}
+    unknown = (ans or {}).get("unknowns") or []
+    # 无答案（declare_insufficient）时，insufficient.reason 才是真正的「题目回应」——
+    # 它写了「缺哪些工具、哪一步做不到」。这个比空转更有价值，也要能整理。
+    insuf = (ans or {}).get("insufficient") if not values else None
+    if not values and not unknown and not insuf:
+        return {"ok": False, "text": "", "note": "答案为空，无可整理"}
+
+    # 取「量到数的」步骤作为依据摘要（能解释数字怎么来的）
+    key_steps = [s for s in (steps or [])
+                 if not s.get("error") and not s.get("rejected")
+                 and (s.get("obs") or s.get("why"))]
+    ev = (ans or {}).get("evidence") or []
+    if ev:
+        prio = {sid: -i for i, sid in enumerate(ev)}
+        key_steps.sort(key=lambda s: prio.get(s.get("id"), 0))
+
+    def fmt(o):
+        return json.dumps(o, ensure_ascii=False, indent=1)[:2200]
+
+    lines = [
+        "## 题目原文", "", raw.strip() or "（原文未留档）", "",
+        "## 上游交的答案（唯一数据源，不要重算）", "", "```json", fmt(values), "```", "",
+    ]
+    if unknown:
+        lines += ["## 明确未解决的项", fmt(unknown), ""]
+    if insuf:
+        lines += ["## 上游判定「无法完成」（题目没能答出，这是核心信息）",
+                  "原因：" + str(insuf.get("reason") or "")[:600], "",
+                  "缺的能力：", "\n".join("- " + str(m)[:140] for m in (insuf.get("missing") or [])), ""]
+    if key_steps:
+        lines += ["## 关键步骤（用来解释数怎么来的，不要照搬）", "| 步 | 工具 | 意图 | 结果 |",
+                  "|---|---|---|---|"]
+        for s in key_steps[:14]:
+            lines.append("| %s | %s | %s | %s |" % (
+                s.get("id", "?"), s.get("tool", "?"), (s.get("why") or "")[:70],
+                ((s.get("obs") or "").replace("\n", " "))[:90]))
+        lines.append("")
+    lines += ["## 你要做的",
+              "把上面写成直接回答题目的自然语言。题问「是不是/是多少/有没有」就"
+              "先给结论再给数；未解决项老实写出来，不要藏。"
+              "实体编号翻译成题目里的称呼（第一次可括注编号）。单位跟数字写在一起。",
+              "输出纯 Markdown，一段总体结论 + 每题一小节。"]
+    user = "\n".join(lines)
+
+    system = ("你是几何任务的答题整理员。上游已用工具量完全部量，你唯一的任务是"
+              "把结构化结果写成直接回答题目的自然语言。规则：严格按给定数说话，"
+              "不重算、不补数；编号翻译成称呼；单位跟数字走；分小节一一对应；"
+              "不要说「用了什么工具」「在第几步」。")
+    try:
+        from agent.policy import LLMPolicy
+        # 复用 LLMPolicy 的端点解析：它知道每个厂商的 base/key 从哪个环境变量读。
+        # 直接用 `_endpoint(_provider(model))` 会传错参数（_endpoint 第一个参数是 provider 不是 model）。
+        pol = LLMPolicy(model)
+        base, key = pol.base, pol.key
+        if not key:
+            return {"ok": False, "text": "", "note": "无 API key（设 DEEPSEEK_API_KEY 等）"}
+        body = json.dumps({"model": model, "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user}], "temperature": 0.0},
+            ensure_ascii=False).encode()
+        import urllib.request
+        req = urllib.request.Request(
+            base + "/chat/completions", data=body,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer %s" % key})
+        with urllib.request.urlopen(req, timeout=90) as r:
+            data = json.loads(r.read().decode())
+        text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        if not text.strip():
+            return {"ok": False, "text": "", "note": "LLM 返回空"}
+        return {"ok": True, "text": text.strip(), "note": ""}
+    except Exception as e:
+        return {"ok": False, "text": "", "note": "%s: %s" % (type(e).__name__, str(e)[:160])}
+
+
 def load_policy(a):
     if a.llm:
         name = a.llm
@@ -625,6 +723,26 @@ def main():
     save_json(os.path.join(outdir, "result.json"), res)
     save_json(os.path.join(outdir, "steps.json"), res["steps"])
 
+    # ------------------------------------------------------------- 自然语言整理
+    # answer 交的是结构化键值（`angle_deg: 65.0`），人读起来还要自己在脑子里拼
+    # 「哪个键对应题目问的哪件事」。这里用**独立的一轮 LLM** 把它们组织成
+    # 直接回答题目的话 —— 不重新算、不改任何数，只决定措辞与顺序。
+    # 只在有题目原文（brief 或卡）且不是纯回放时做；失败不影响主结果。
+    _task_text = (brief or {}).get("raw") or _card_task_text(card_text)
+    _model = getattr(policy, "model", None)
+    if _task_text and _model and policy.kind == "llm":
+        nar = narrate_answer(_task_text, ans, res.get("steps"), _model,
+                             (brief or {}).get("kind_label"))
+        res["narrative"] = nar
+        if nar.get("ok"):
+            with open(os.path.join(outdir, "answer.md"), "w", encoding="utf-8") as fh:
+                fh.write(nar["text"].rstrip() + "\n")
+            print("  自然语言整理：完成")
+        else:
+            print("  自然语言整理：跳过（%s）" % nar.get("note", ""))
+        # 把 narrative 一并写回 result.json（上面已 save 过一次）
+        save_json(os.path.join(outdir, "result.json"), res)
+
     paths, vid = [], None
     if bus.scene:
         paths, vid = render_all(bus, res, outdir, a.orbits, not a.no_video, loop.results)
@@ -633,7 +751,8 @@ def main():
         try:
             vgeom.dump(bus.scene, os.path.join(outdir, "geom.json"),
                        tag=os.path.basename(outdir), step="final",
-                       turn=loop.turn, note="收尾 · %s" % res.get("status"))
+                       turn=loop.turn, note="收尾 · %s" % res.get("status"),
+                       marks=vgeom.step_marks(loop))  # 最终 marks 必须带上，否则覆盖掉运行中累积的
         except Exception:
             pass
         # 收尾后不删 frames/live.png：页面是 800 ms 轮询，删掉会有一段 404 窗口，
