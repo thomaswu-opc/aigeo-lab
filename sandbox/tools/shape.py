@@ -29,7 +29,7 @@ def _solid_of(bus, sid):
     for s in bus.scene:
         if s.sid == sid:
             return s
-    raise KeyError(f"场景里没有 {sid}")
+    raise KeyError(bus.missing_msg(sid))
 
 
 def _axis_index(axis):
@@ -92,12 +92,21 @@ def _components(P, F, tol=1e-6):
       unit="m")
 def t_parts(bus, sid, min_tri=2, keep_original=False):
     S = _solid_of(bus, sid)
-    comps = _components(S.P, S.F)
+    comps = [c for c in _components(S.P, S.F) if len(c) >= min_tri]
+    # 只有一个连通分量 = 本来就只是一件。此时「拆」的唯一效果是把编号从 C017 换成 C017.1，
+    # 场景没变、信息没变，却让后续所有引用失效 —— 实测 T03 就是拆椅子「确认是否多件」，
+    # 拆完自己把 C017 弄没了、后面 37 次调用全撞在上面。
+    # 所以：一件就原样返回，编号不动，并明说「不需要换号」。
+    if len(comps) <= 1:
+        d = geom.describe(S)
+        d["parent"] = sid
+        d["share"] = 1.0
+        return {"parent": sid, "parts": [d], "n": 1, "kept_original": True,
+                "_notice": ("只有 1 个连通分量 —— %s 本来就是一件，拆不出部件，"
+                            "编号不变，直接按 %s 继续。" % (sid, sid))}
     out = []
     k = 0
     for idx in comps:
-        if len(idx) < min_tri:
-            continue
         idx = np.asarray(idx, int)
         verts = np.unique(S.F[idx])
         remap = {int(v): i for i, v in enumerate(verts)}
@@ -111,10 +120,22 @@ def t_parts(bus, sid, min_tri=2, keep_original=False):
         d["parent"] = sid
         d["share"] = round(len(idx) / max(len(S.F), 1), 6)
         out.append(d)
+    kids = []
     if not keep_original:
         bus.scene = [s for s in bus.scene if s.sid != sid]
+        kids = [d["sid"] for d in out]
+        # 把「原编号作废、改用哪些编号」登记在总线上：后续任何工具报「场景里没有 C017」时
+        # 都能补一句「已拆成 C017.1/C017.2」。不登记的话，拆完这一步就是一次静默的
+        # 场景改写 —— 实测 T03 后续 37 次调用全撞在这上面，占该题全部报错的 100%。
+        bus.split_map[sid] = kids
     out.sort(key=lambda d: -d["ntri"])
-    return {"parent": sid, "parts": out, "n": len(out), "kept_original": bool(keep_original)}
+    res = {"parent": sid, "parts": out, "n": len(out), "kept_original": bool(keep_original)}
+    if kids:
+        res["removed"] = {sid: kids}
+        res["_notice"] = ("原实体 %s 已从场景移除（keep_original=false），它现在是 %s。"
+                          "后续所有引用请用新编号，@%s 里也只剩 %s。"
+                          % (sid, "/".join(kids), sid, "/".join(kids)))
+    return res
 
 
 # ================================================================ 轴向凹坑

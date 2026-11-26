@@ -15,7 +15,7 @@ def _get(bus, sid):
     for s in bus.scene:
         if s.sid == sid:
             return s
-    raise KeyError(f"场景里没有 {sid}；现有 {[s.sid for s in bus.scene][:12]}…")
+    raise KeyError(bus.missing_msg(sid))
 
 
 def _items(bus, items):

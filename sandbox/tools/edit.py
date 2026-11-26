@@ -319,7 +319,7 @@ def _get(bus, sid):
     for s in bus.scene:
         if s.sid == sid:
             return s
-    raise KeyError("场景里没有 %s；现有 %s…" % (sid, [x.sid for x in bus.scene][:12]))
+    raise KeyError(bus.missing_msg(sid))
 
 
 def _flatten_sids(sids):

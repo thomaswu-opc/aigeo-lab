@@ -318,6 +318,11 @@ class LLMPolicy(Policy):
                         "不会带来新的数 —— 连续 5 步量不出新数字，编排层会直接代为推进阶段，"
                         "那一步的记账里会写明「代为推进」。" % nph)
 
+        if ctx.get("closing"):
+            # 收口提示放在最后一行：模型对「正文末尾」的指令服从度最高，
+            # 而这一条要压过前面所有「再确认一次」的冲动。
+            body.append(ctx["closing"])
+
         f = ctx["failure"]
         if f:
             body.append("未消解的失败：" + json.dumps(f, ensure_ascii=False))

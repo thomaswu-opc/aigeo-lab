@@ -52,7 +52,7 @@ def _solid(bus, sid):
     for S in bus.scene:
         if S.sid == sid:
             return S
-    raise KeyError("场景里没有 %s" % sid)
+    raise KeyError(bus.missing_msg(sid))
 
 
 def _seg_gap(P, segs):

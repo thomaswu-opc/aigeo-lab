@@ -37,6 +37,22 @@ PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "VERIFY", "EDIT", "REVALIDATE", "REPO
 # 两处用同一份，才不会出现"范围外的词审计看不见"。
 SCOPE_LABELS = ("门", "窗", "落地窗", "无法区分")
 
+# 「结构类」只读工具：它们的返回是**集合或形状**，同一份返回就意味着同一个问题。
+# 换个措辞（items 从 sid 换成指纹、label 换个名）签名会变，但产物一字不差 ——
+# 这正是现有「参数相同」检测的盲区。测量类工具不在此列：同一个距离在两个对称面上
+# 重复出现是合法的，那里用「有没有新数字」判断更准（见 _note_fresh_numbers）。
+STRUCT_TOOLS = {"select", "pick", "clusters", "principal_frame", "parts", "profile",
+                "pockets", "levels", "openings", "assembly", "merge", "gaps", "contains"}
+
+
+def _out_fp(obs):
+    """返回内容指纹：去掉编排层追加的引导字段后再哈希。"""
+    if not obs:
+        return None
+    t = re.sub(r'"(?:_repeat|_next|_reload|_same_hits|_phase_forced|_label|_ref)"\s*:\s*'
+               r'("(?:[^"\\]|\\.)*"|\[[^\]]*\]|\{[^{}]*\})', '"~"', obs)
+    return hashlib.sha256(t.encode("utf-8")).hexdigest()[:16]
+
 PHASE_TOOLS = {
     "SURVEY":   {"load", "clusters", "principal_frame"},
     "IDENTIFY": {"select", "principal_frame", "contains", "merge", "gaps", "clusters", "segment", "pick",
@@ -202,6 +218,12 @@ class Loop:
         self._sig_out = {}          # 缓存对应的原始返回，用来把新步骤登记进 results
         self._sig_first = {}        # 同一签名的第一次步骤 id：重复时直接告诉它去引用那一步
         self._sig_err = {}          # 同一签名失败时的报错原文：失败调用没有返回可缓存，但要能重放提示
+        self._out_seen = {}         # 返回值指纹 -> 首次产生的步骤：抓「换措辞问同一件事」
+        self.tool_of = {}           # 步骤 id -> 工具名（引用别名要用：@load → 实际那一步）
+        self._closing = False       # 是否已进入收口窗口（预算将尽，必须交卷）
+        self._sid_n = 0             # 步骤号计数器（与 turn 解耦）
+        self._free = 0              # 已退还的轮次数（重复只读调用不烧预算）
+        self.closing_note = None    # 收口提示（进上下文，也进账本）
         self._last_select = None    # 上一步 select 的命中集合（判断"换条件有没有换来新信息"）
         self._loaded = {}           # 已读过哪些模型文件（重复 load 不重算，也不清去重计数）
         # 「这一步到底带回了新数字吗」—— 换参数而不换判据的打转，签名完全相同那条抓不到。
@@ -230,6 +252,7 @@ class Loop:
             if time.time() - self.t0 > self.wall_budget:
                 self._finish("TIMEOUT")
                 break
+            self._maybe_close()
             self.turn += 1
             try:
                 act = self.policy.decide(self.context())
@@ -246,6 +269,82 @@ class Loop:
 
     # ------------------------------------------------------------ 上下文
 
+    def _draft_board(self, limit=10):
+        """把「已经量到的数」摆成一张可交付的草稿板。
+
+        针对的是最贵的一类失败：**算对了没交**。T06 在 99 轮里量到净宽 6.0，
+        但交卷时 values 是空的，终局 BUDGET_EXHAUSTED。它缺的不是计算能力，
+        而是「把散落在十几条观察里的数重新拼成答案」这一步。
+        草稿板只做搬移：哪一步、什么工具、量出了哪些数 —— 不做任何语义判断，
+        也不替它决定哪个数填哪个键（那是它的活，也是审计要认的东西）。
+        """
+        rows = []
+        for sid in self.measurements[-limit:]:
+            st = next((x for x in reversed(self.steps) if x.get("id") == sid), None)
+            if not st:
+                continue
+            nums = []
+            for m in re.finditer(r'"(?:value|values|distance|d|m|area|volume|angle|n)"\s*:\s*'
+                                 r'(-?\d+(?:\.\d+)?)', st.get("obs") or ""):
+                v = m.group(1)
+                if v not in nums:
+                    nums.append(v)
+            if not nums:
+                continue
+            rows.append("  %s  %s(%s) → %s" % (sid, st.get("tool"), (st.get("args") or "")[:70],
+                                               ", ".join(nums[:6])))
+        if not rows:
+            return None
+        return ("你已经量到这些数（直接用，不要重算；把它们分配到答案键上）：\n"
+                + "\n".join(rows))
+
+    def _maybe_close(self):
+        """收口窗口：预算将尽时，把「继续取数」和「交卷」的收益差写在明处。
+
+        实测最贵的一类失败不是算错，而是**算对了没交**：T06 已经量到净宽 6.0，
+        然后在剩余 40 轮里反复复核，最后 99/100 用完、状态 BUDGET_EXHAUSTED，
+        答案里一个数都没有。终局是「什么也没交」，而它手里其实有数。
+        所以到了窗口就明确说：现在唯一会改变结果的动作是交卷。
+        阶段一并推到 VERIFY（那里 answer 是放行的）—— 这不是替它思考，是把
+        「还剩多少预算」这个它看不见的事实告诉它。
+        """
+        if self._closing or self.answer is not None:
+            return False
+        # 回放录制的验收链不能被预算启发式扰动：那 9 条记录的意义是「同一串决定
+        # 必然得到同一个结果」。回放本来就不吃模型，也不该吃收口提示。
+        if getattr(self.policy, "kind", "") == "recorded":
+            return False
+        # 一步测量都没有的时候不催交卷：那不是「算对没交」，是还没开始算。
+        # 催它只会得到一份空答案，反而把 BUDGET_EXHAUSTED 变成 AUDIT_FAILED。
+        if not self.measurements:
+            return False
+        left_turn = self.max_turns - self.turn
+        left_time = self.wall_budget - (time.time() - self.t0)
+        # 下限取 4 而不是 6：小预算（10 轮）下取 6 会在第 4 轮就催交卷，
+        # 那不是收口，是中途打断。真实 bench 是 100 轮，窗口落在第 85 轮。
+        near = (left_turn <= max(4, int(self.max_turns * 0.15))
+                or left_time <= max(20.0, self.wall_budget * 0.15))
+        if not near:
+            return False
+        self._closing = True
+        before = self.phase
+        # EDIT 不动：改完必须 emit，跑到一半收口等于什么都没做。
+        if before in ("SURVEY", "IDENTIFY", "MEASURE", "RECOVER", "REVALIDATE"):
+            self.phase = "VERIFY"
+        self.closing_note = (
+            "收口窗口：只剩 %d 轮 / %.0f 秒。从现在起，**取数不再改变结论** ——"
+            "把已经量到的写进 answer.values（每个数都要能指到某个步骤），"
+            "确实没量出来的写进 unknowns 并说明缺什么；已经有数却写 null 会被判「不算交卷」。"
+            "如果还有一步没做完，先用一句话判断它会不会改变某个数：不会，就现在交卷。"
+            % (left_turn, max(0.0, left_time)))
+        board = self._draft_board()
+        if board:
+            self.closing_note += "\n" + board
+        self.L.append("closing_window", {"from": before, "to": self.phase,
+                                         "left_turn": left_turn,
+                                         "left_s": round(max(0.0, left_time), 1)})
+        return True
+
     def context(self):
         allowed = PHASE_TOOLS.get(self.phase, set())
         return {
@@ -253,6 +352,7 @@ class Loop:
             "phase": self.phase,
             "goal": PHASE_GOAL[self.phase],
             "budget_left": self.max_turns - self.turn,
+            "closing": self.closing_note,
             "elapsed_s": round(time.time() - self.t0, 2),
             "card": self.card_text,
             "model": self.model_path,
@@ -341,15 +441,34 @@ class Loop:
                 self.L.append("label_renamed", {"from": base, "to": label, "tool": name})
             sid = label
         else:
-            sid = "s%d" % self.turn
+            # 步骤号与轮次解耦：重复只读调用会把轮次退还（见 _refund），
+            # 若用 turn 当编号，退还后会生成重复的 s12，证据引用会静默指向另一条。
+            self._sid_n += 1
+            sid = "s%d" % self._sid_n
+        self.bus.notes = []
         try:
-            args = self.bus.resolve(args, self.results)
+            args = self.bus.resolve(args, self.results, self.tool_of)
         except Exception as e:
             self.L.append("resolve_error", {"step": sid, "tool": name, "args": _short(args),
                                             "error": "%s: %s" % (type(e).__name__, e)})
             self.steps.append({"id": sid, "phase": self.phase, "tool": name, "args": _short(args, 300),
                                "why": why, "error": "引用解析失败：%s" % e})
             return
+        # 别名纠正（@load → 实际步骤 all、.items → .solids）：已经按意图解析了，
+        # 但必须把「正确的写法」说出来，否则它下一次还写错。
+        ref_note = ""
+        if self.bus.notes:
+            parts = []
+            for nt in self.bus.notes:
+                if "field" in nt:
+                    parts.append("%s 的字段名是 %s，不是 %s" % (nt["ref"], nt["to"], nt["field"]))
+                else:
+                    parts.append("%s 已按最近一次 %s 步骤解析为 @%s，以后请直接写 @%s"
+                                 % (nt["ref"], nt.get("tool") or "同名", nt["to"], nt["to"]))
+            ref_note = "；".join(parts)
+            for nt in self.bus.notes:
+                self.L.append("ref_alias", nt)
+            self.bus.notes = []
 
         self.L.append("decision", {"step": sid, "phase": self.phase, "tool": name,
                                    "args": _short(args), "why": why,
@@ -380,6 +499,7 @@ class Loop:
                 self.steps.append(step)
                 self.L.append("stall_warn", {"step": sid, "tool": name, "repeat": repeat,
                                              "action": "same_error"})
+                self._refund(sid)
                 return
             if pure and cached and repeat < 9:
                 obs, stats = cached
@@ -406,6 +526,7 @@ class Loop:
                 # 实测 T01 第 1 问在旋转副本上连查 6 次同一面墙、每次都被缓存接住、
                 # 最后一次直接判 STALLED —— 它其实早已有全部数字，只差收口。
                 self._spin += 1
+                self._refund(sid)
                 self._maybe_force(sid, step, "连续 %d 步没有带回新数字（这一步命中缓存）" % self._spin)
                 return
             self.L.append("stall_abort", {"step": sid, "tool": name, "repeat": repeat})
@@ -415,9 +536,12 @@ class Loop:
         try:
             out = self.bus.call(name, args, sid)
         except Exception as e:
-            self.steps.append({"id": sid, "phase": self.phase, "tool": name,
-                               "args": _short(args, 300), "why": why,
-                               "error": str(e)[:300]})
+            step = {"id": sid, "phase": self.phase, "tool": name,
+                    "args": _short(args, 300), "why": why,
+                    "error": str(e)[:300]}
+            if ref_note:
+                step["hint"] = "引用已自动纠正：" + ref_note
+            self.steps.append(step)
             # 工具错误留在本阶段处理：参数写错是可当场修正的机械问题，
             # 不该升级成「证据不足」并把人吸进自救态。实测这一点会让智能体
             # 把 80% 的轮次耗在 RECOVER 里反复试探，再也没回到识别环节。
@@ -426,6 +550,7 @@ class Loop:
             return
 
         self.results[sid] = out
+        self.tool_of[sid] = name
         if rename:
             out = dict(out) if isinstance(out, dict) else {"value": out}
             out["_label"] = ("标签 %s 已被占用，本次步骤记为 %s；后续引用请用 @%s。"
@@ -439,6 +564,28 @@ class Loop:
         self._sig_obs[sig] = (obs, stats)
         self._sig_out[sig] = out
         self._sig_first.setdefault(sig, sid)
+
+        # 「换措辞问同一个东西」：参数不同、返回一字不差。这类步骤在账本里占
+        # 全部只读步的 7%，而现有签名检测一条都抓不到（签名按参数算）。
+        # 处理方式是提示而不是拦截：结果照给（它可能确实要看），但明确说「与第 X 步完全相同」，
+        # 并计入打转计数 —— 连续几步这样就说明该换阶段了。
+        same_as = None
+        if name in STRUCT_TOOLS:
+            fp = _out_fp(obs)
+            if fp:
+                same_as = self._out_seen.get(fp)
+                if same_as and same_as != sid:
+                    self._spin += 1
+                    self.L.append("dup_output", {"step": sid, "tool": name, "same_as": same_as})
+                elif not same_as:
+                    self._out_seen[fp] = sid
+
+        if same_as:
+            obs = obs[:-1] + (',"_same_result":"这一步的返回与步骤 %s 完全相同 —— 换措辞不会换结果。'
+                              '需要这个结果时写 @%s.字段 引用；要继续就必须换正交判据，'
+                              '或者推进阶段。"}' % (same_as, same_as))
+        if ref_note:
+            obs = obs[:-1] + (',"_ref":"%s"}' % ref_note.replace('"', "'"))
         if repeat >= 2:
             # 第二次调用完全相同的参数时就必须提醒：返回值不会变，第 3 次会被判停滞。
             # 等到第 3 次才报错是不负责任的 —— 那时智能体已经浪费了两轮，而且它并不知道
@@ -451,7 +598,12 @@ class Loop:
         step = {"id": sid, "phase": self.phase, "tool": name, "args": _short(args, 300),
                 "why": why, "n": n, "expect_n": want,
                 "hint": sch.hint_for(name, stats), "obs": obs}
+        if same_as:
+            step["hint"] = "返回与步骤 %s 完全相同" % same_as
+            step["dup_of"] = same_as
         self.steps.append(step)
+        if same_as:
+            self._maybe_force(sid, step, "连续 %d 步返回与已有步骤完全相同" % self._spin)
 
         if name in ("select", "pick") and n == 1:
             items = out.get("items") or ([out["item"]] if out.get("item") else [])
@@ -597,6 +749,7 @@ class Loop:
             # 不清空的话，编辑前量一次、编辑后再量一次会被判成「原地打转」，
             # 而它恰恰是本层最该做的动作：改前改后各量一遍。
             self._sig_count.clear()
+            self._out_seen.clear()
             # 「这个数以前出现过」的前提同样失效：改完之后 3.2 m 还是 3.2 m，但指的是新的东西。
             self._seen_nums.clear()
             self._meas_fresh.clear()
@@ -606,6 +759,7 @@ class Loop:
             # load 会把整个场景换掉，「同参数 = 同结果」这个前提随之失效：
             # 同一句 sweep_rotate 在状态1 和状态2 上本来就该给出不同角度。
             self._sig_count.clear()
+            self._out_seen.clear()
             self._seen_nums.clear()
             self._meas_fresh.clear()
             p = (out.get("meta") or {}).get("path")
@@ -671,6 +825,23 @@ class Loop:
         if len(self._meas_fresh) < window:
             return False
         return all(k == 0 for _, k in self._meas_fresh[-window:])
+
+    def _refund(self, sid):
+        """重复的只读调用不消耗轮次预算。
+
+        理由：一次「同样的参数、同样的返回」没有产生任何信息，把它记进轮次等于
+        用预算惩罚一个无效动作 —— 实测 T02 在 VERIFY 里这样耗掉 30/41 轮，
+        而它真正需要的动作只有「交卷」。
+        退还是**有上限**的（默认 6 次）：无限退还会把「原地打转」变成「永远不结束」，
+        而且每次仍要花一次 LLM 调用和真实时间。上限用完后按普通轮次计费，
+        后续由停滞判定收尾。
+        """
+        if self._free >= 6:
+            return False
+        self._free += 1
+        self.turn -= 1
+        self.L.append("turn_refunded", {"step": sid, "n": self._free})
+        return True
 
     def _maybe_force(self, sid, step, why):
         """连续 5 步「没有带回新东西」→ 编排层代它推进阶段，并把这件事写在明处。

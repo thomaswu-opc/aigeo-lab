@@ -333,7 +333,7 @@ def _solid_of(bus, sid):
     for s in bus.scene:
         if s.sid == sid:
             return s
-    raise KeyError(f"场景里没有 {sid}")
+    raise KeyError(bus.missing_msg(sid))
 
 
 def _gather(bus, sids):
