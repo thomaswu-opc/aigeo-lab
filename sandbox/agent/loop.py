@@ -223,6 +223,7 @@ class Loop:
         self._closing = False       # 是否已进入收口窗口（预算将尽，必须交卷）
         self._sid_n = 0             # 步骤号计数器（与 turn 解耦）
         self._free = 0              # 已退还的轮次数（重复只读调用不烧预算）
+        self._null_rejects = 0      # 「量到了却填 null」被拒的次数（只拒一次，防死锁）
         self.closing_note = None    # 收口提示（进上下文，也进账本）
         self._last_select = None    # 上一步 select 的命中集合（判断"换条件有没有换来新信息"）
         self._loaded = {}           # 已读过哪些模型文件（重复 load 不重算，也不清去重计数）
@@ -269,13 +270,21 @@ class Loop:
 
     # ------------------------------------------------------------ 上下文
 
-    def _draft_board(self, limit=10):
+    # 测量类工具的返回里，这些键才是「结论」；其余是过程量或噪声。
+    NUM_KEYS = ("value", "distance", "angle_deg", "acute_deg", "area", "volume",
+                "dot", "clearance", "gap", "width", "height", "depth", "shift")
+    NOISE_KEYS = {"n", "ntri", "edge_pairs_evaluated", "share_a", "share_b", "k", "idx", "unit"}
+
+    def _draft_board(self, limit=12):
         """把「已经量到的数」摆成一张可交付的草稿板。
 
-        针对的是最贵的一类失败：**算对了没交**。T06 在 99 轮里量到净宽 6.0，
-        但交卷时 values 是空的，终局 BUDGET_EXHAUSTED。它缺的不是计算能力，
-        而是「把散落在十几条观察里的数重新拼成答案」这一步。
-        草稿板只做搬移：哪一步、什么工具、量出了哪些数 —— 不做任何语义判断，
+        针对的是最贵的一类失败：**算对了没交**。live_1126_103948 把三道 distance
+        （0.6965 / 2.2767 / 3.8019）和一次 angle（acute_deg=65）都量出来了，
+        交卷时这几个键全填 null，unknowns 还写着「工具未返回可用数值」。
+        原因不是它不肯填：那些数字已经滑出「最近观察」窗口，总览表里只有步骤名和工具名，
+        不含数值 —— 它在组装答案的那一刻手里真的没有这些数。
+
+        草稿板只做搬移：哪一步、什么工具、量出了哪些键值。不做语义判断，
         也不替它决定哪个数填哪个键（那是它的活，也是审计要认的东西）。
         """
         rows = []
@@ -283,20 +292,29 @@ class Loop:
             st = next((x for x in reversed(self.steps) if x.get("id") == sid), None)
             if not st:
                 continue
-            nums = []
-            for m in re.finditer(r'"(?:value|values|distance|d|m|area|volume|angle|n)"\s*:\s*'
-                                 r'(-?\d+(?:\.\d+)?)', st.get("obs") or ""):
-                v = m.group(1)
-                if v not in nums:
-                    nums.append(v)
-            if not nums:
+            pairs, seen = [], set()
+            for m in re.finditer(r'"([a-z_][a-z0-9_]*)"\s*:\s*(-?\d+(?:\.\d+)?)', st.get("obs") or ""):
+                k, v = m.group(1), m.group(2)
+                if k in self.NOISE_KEYS or (k, v) in seen:
+                    continue
+                seen.add((k, v))
+                pairs.append((k, v))
+            if not pairs:
                 continue
-            rows.append("  %s  %s(%s) → %s" % (sid, st.get("tool"), (st.get("args") or "")[:70],
-                                               ", ".join(nums[:6])))
+            # 结论量排前面：模型一眼要看到的是 value / acute_deg，不是 witness 的坐标分量
+            pairs.sort(key=lambda kv: 0 if kv[0] in self.NUM_KEYS else 1)
+            rows.append("  %s  %s(%s) → %s" % (
+                sid, st.get("tool"), (st.get("args") or "")[:60],
+                ", ".join("%s=%s" % kv for kv in pairs[:5])))
         if not rows:
             return None
-        return ("你已经量到这些数（直接用，不要重算；把它们分配到答案键上）：\n"
+        return ("你已经量到这些数（工具原样返回，直接引用，不要重算、不要凭记忆写）：\n"
                 + "\n".join(rows))
+
+    def _has_numbers(self):
+        """本次运行是否真的量出过数（有测量步骤、且其观察里带数值）。"""
+        return any(s.get("id") in self.measurements and re.search(r":\s*-?\d", s.get("obs") or "")
+                   for s in self.steps)
 
     def _maybe_close(self):
         """收口窗口：预算将尽时，把「继续取数」和「交卷」的收益差写在明处。
@@ -353,6 +371,11 @@ class Loop:
             "goal": PHASE_GOAL[self.phase],
             "budget_left": self.max_turns - self.turn,
             "closing": self.closing_note,
+            # 复核与报告阶段常驻一张「已量到的数」：交卷时最需要的就是它。
+            # 只在这两个阶段给，是因为识别/测量阶段的任务是「找下一个量」，
+            # 提前贴出来会让它以为已经够了、跳过本该做的测量。
+            "measured": (self._draft_board(limit=14)
+                         if self.phase in ("VERIFY", "REPORT") else None),
             "elapsed_s": round(time.time() - self.t0, 2),
             "card": self.card_text,
             "model": self.model_path,
@@ -1133,6 +1156,21 @@ class Loop:
         if isinstance(_vals, dict) and _vals and not _substantive(_vals):
             problems.append("values 里的键都在，但值全是 null / 空 / 「未知」—— 这不算交卷。"
                             "量出来就写数（每个数要有工具出处），量不出来就把这一项写进 unknowns")
+        # 「量到了却填 null」：这不是编造（审计本来就拦编造），是**交付断层**。
+        # live_1126_103948 三道 distance 全成功、angle 给出 acute_deg=65，交卷时这几个键却
+        # 全是 null，unknowns 的理由是「工具未返回可用数值」—— 与账本直接矛盾。
+        # 只拒一次：有些项确实量不出来，第二次允许它带着真实理由放过。
+        if isinstance(_vals, dict) and _vals and self._has_numbers() and self._null_rejects < 1:
+            nulls = [k for k, x in _vals.items()
+                     if x is None or (isinstance(x, str) and x.strip() in ("", "未知", "无", "null", "None"))]
+            if nulls:
+                self._null_rejects += 1
+                problems.append(
+                    "这些键是 null：%s。但本次运行已经量出过数（下面这些是工具原样返回的）：\n%s\n"
+                    "能对上就直接填进去；确实没有对应量的，把 unknowns 的理由改写成"
+                    "「缺哪个工具/哪一步做不到」——不要写「工具未返回可用数值」，账本里它们返回了。"
+                    % ("/".join(nulls[:6]), self._draft_board(limit=8) or "（无）"))
+
         if not isinstance(_vals, dict) or not _vals:
             problems.append("答案的 values 是空的 —— 空答案不算交卷。把结论写进 values"
                             "（键名见任务卡的「答案字段名」）；确实量不出来就调 "

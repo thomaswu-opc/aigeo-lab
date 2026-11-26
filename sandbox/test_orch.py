@@ -149,5 +149,31 @@ loop5.turn = 95
 loop5.answer = {"values": {"x": 1}}
 check("已交卷不触发收口", loop5._maybe_close(), False)
 
+# ---------------------------------------------------------------- 5. 量到了却填 null
+bus8 = Bus(ledger())
+loop8 = Loop(bus8, ledger(), FakePolicy(), "card", "card.md", "m.ifc", max_turns=70)
+loop8.steps = [{"id": "d1", "phase": "MEASURE", "tool": "distance",
+                "args": '{"a": "C017", "b": "C011"}',
+                "obs": '{"value": 0.6965, "unit": "m", "edge_pairs_evaluated": 45}'}]
+loop8.measurements = ["d1"]
+loop8.results["d1"] = {"value": 0.6965}
+ans = {"values": {"chair": "C017", "min_distance_chair_to_door_leaf_m": None},
+        "unknowns": ["距离：distance 工具调用未返回可用数值"],
+        "evidence": ["d1"]}
+check("账本里有数 → 有 _has_numbers", loop8._has_numbers(), True)
+loop8._audit("a1", ans)
+check("半空答案被拒一次", loop8.audit_rejects, 1)
+rej = [x for x in loop8.steps if x.get("id") == "audit"][-1]
+check("驳回理由里带着实测值", "0.6965" in rej["obs"], True)
+# 第二次放行（有些项确实量不出来，不能死锁）
+loop8._audit("a2", ans)
+check("第二次不再拒同一条", loop8.audit_rejects, 1)
+
+# 常驻测量板：VERIFY/REPORT 才有
+loop8.phase = "MEASURE"
+check("测量阶段不贴板", loop8.context()["measured"], None)
+loop8.phase = "VERIFY"
+check("复核阶段贴板", "0.6965" in (loop8.context()["measured"] or ""), True)
+
 print("\n%d 通过 / %d 失败" % (ok, fail))
 sys.exit(1 if fail else 0)
