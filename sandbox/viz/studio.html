@@ -1618,18 +1618,26 @@ function followFocus(){
 function focusCameraOn(bb){
   const sz=bb.getSize(new THREE.Vector3());
   const c=bb.getCenter(new THREE.Vector3());
-  // 视点中心用焦点包围盒中心（不是整个场景）
+  // 视点中心用焦点包围盒中心（不是整个场景）→ 焦点对象居中
   VIEW.sph.target.copy(c);
-  // 距离：最大维度 / tan(halfFov) * 1.2 给一点余量
-  const maxDim=Math.max(sz.x, sz.y, sz.z);
+  // —— 让焦点对象占画面约 75% ——
+  // 分别按水平、竖直两个方向算：物体在某一方向的"投影半径"取该方向与其垂直深度
+  // 的较大者（斜视时深度会投影到该方向）。让两个方向都达到 75%，取更大的距离。
+  //   proj_r_dir = max(dir_size/2, depth_size/2)
+  //   距离 = proj_r_dir / (0.75 · tan(halfFov_dir))
   const fov=VIEW.camera.fov*Math.PI/180;
   const hHalf=Math.atan(Math.tan(fov/2)*VIEW.camera.aspect);
+  const RATIO=0.75;
+  // 水平投影半径 ≈ 水平两轴较大值；竖直投影半径 ≈ (H/2, 水平深度投影) —— 用包围盒
+  // 三边两两组合：水平用 (x,z)，竖直用 (y,z)，都取较大者（z 会随视角投到两方向）
+  const projH=Math.max(sz.x/2, sz.z/2);
+  const projV=Math.max(sz.y/2, sz.z/2);
   const need=Math.max(
-    (maxDim/2)/Math.tan(fov/2)*1.25,
-    (maxDim/2)/Math.tan(hHalf)*1.25,
-    2.0  // 最小距离
+    projH/(RATIO*Math.tan(hHalf)),
+    projV/(RATIO*Math.tan(fov/2)),
+    1.2
   );
-  VIEW.sph.r=Math.max(1.5, need);
+  VIEW.sph.r=Math.max(1.2, need);
   VIEW.applyCam();
 }
 
@@ -1662,7 +1670,9 @@ function renderMarkbar(){
   $("mkall").onclick=()=>{ VIEW.markOn=!VIEW.markOn; applyMarks(); renderMarkbar(); };
 }
 
-/* 在 refreshGeom 末尾调用：拿到 marks 后设置初始步骤并渲染时间线 */
+/* 在 refreshGeom / renderView 末尾调用：拿到 marks 后设置初始步骤、渲染时间线，
+   并让相机跟到这一步的焦点实体上。必须在 applyGeom 之后调 —— 否则 VIEW.meshes
+   还是旧的，focusCameraOn 算不出包围盒。 */
 function initMarks(){
   const all=getMarks();
   if(all.length && VIEW.markStep<0){
@@ -1671,6 +1681,8 @@ function initMarks(){
   if(!all.length) VIEW.markStep=-1;
   renderMarkbar();
   applyMarks();
+  // 相机跟随焦点实体（用户没手动拖过时）
+  if(VIEW.follow && !VIEW.userMoved) followFocus();
 }
 
 function resizeViewer(){
@@ -1714,6 +1726,7 @@ function hoverAt(e, host){
 
 function paintHover(){
   const fs = VIEW.focusSids;   // 当前步骤的焦点实体集合（由 applyMarks 设置）
+  const focusMode = !!(fs && fs.size > 0);   // 有焦点实体 → 进入"追踪"模式
   VIEW.meshes.forEach(m=>{
     const u = m.userData;
     const isSel = u.sid === VIEW.sel, isHov = u.sid === VIEW.hover;
@@ -1721,15 +1734,28 @@ function paintHover(){
     // 优先级：选中 > 悬停 > 焦点步骤高亮
     m.material.emissive.setHex(isSel ? 0x2f6fd0 : (isHov ? 0x6b7a90 : (isFocus ? 0x1a5fa0 : 0x000000)));
     m.material.emissiveIntensity = isSel ? 0.55 : (isHov ? 0.28 : (isFocus ? 0.42 : 0));
-    // 结构体（墙/地/顶）半透明，否则从外面看不见里面的家具 ——
-    // 这是快照时代最容易被误读的一点：「房间里看着是空的」其实是被墙挡了。
-    // 结构体分「背面剔除」和「真半透明」两档：
-    // 0.34 的 alpha 会让墙后面的家具也变淡，看着像蒙了层雾；
-    // 剔除背面（FrontSide）反而更像真墙 —— 从外面看是实墙，镜头转进屋里就自动看穿。
+    // 追踪模式（有焦点实体）：
+    //   · 焦点实体 → 不透明 + 略提亮，始终清晰
+    //   · 其他构件 → 半透明（比结构体 ghost 更透，让焦点从一堆构件里"浮"出来）
+    // 非追踪模式 → 沿用原 ghost 逻辑（结构体半透明，其余实心）
     const ghost = !!(S.view && S.view.ghost);
-    m.material.opacity = (u.struct && !isSel) ? (ghost ? 0.5 : 0.95) : 1;
-    m.material.depthWrite = true;
-    m.material.side = (u.struct && ghost) ? THREE.FrontSide : THREE.DoubleSide;
+    if(focusMode){
+      if(isFocus){
+        m.material.opacity = 1;
+        m.material.depthWrite = true;
+        m.material.side = THREE.DoubleSide;
+      } else {
+        // 非焦点构件：半透明。结构体更透（墙/地/顶），普通构件也压到 0.45，
+        // 这样焦点实体周围一圈都变淡，视觉上"焦点浮出"。
+        m.material.opacity = u.struct ? 0.22 : 0.45;
+        m.material.depthWrite = false;
+        m.material.side = THREE.DoubleSide;
+      }
+    } else {
+      m.material.opacity = (u.struct && !isSel) ? (ghost ? 0.5 : 0.95) : 1;
+      m.material.depthWrite = true;
+      m.material.side = (u.struct && ghost) ? THREE.FrontSide : THREE.DoubleSide;
+    }
   });
   VIEW.dirty = true;
   pump();
