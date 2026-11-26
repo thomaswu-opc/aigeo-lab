@@ -169,7 +169,12 @@ def start_solve(text, model_rel, title=None, max_turns=70, wall=900):
         raise ValueError("模型文件不存在：%s" % model_rel)
 
     from agent.brief import compile_brief
-    brief = compile_brief((title.strip() + "\n\n" + text) if title else text)
+    # title 是给页面列表看的短标签，不是题目的一部分。不能拼进 raw ——
+    # 否则 natural-language 整理会把「题：xxx」印成「题：<title> 题目」，答非所问。
+    # compile_brief 只处理纯题目原文；title 单独存档（brief.json 的 title 字段）。
+    brief = compile_brief(text)
+    if title:
+        brief["title"] = title.strip()
 
     stamp = time.strftime("%m%d_%H%M%S")
     tag = "live_%s" % stamp

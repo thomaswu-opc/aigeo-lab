@@ -728,8 +728,11 @@ def main():
     # 「哪个键对应题目问的哪件事」。这里用**独立的一轮 LLM** 把它们组织成
     # 直接回答题目的话 —— 不重新算、不改任何数，只决定措辞与顺序。
     # 只在有题目原文（brief 或卡）且不是纯回放时做；失败不影响主结果。
+    # 整理只在答案**通过审计**后有意义（INSUFFICIENT 等失败态整理出来的
+    # 是"为什么做不到"，不是答案本身）。
     _task_text = (brief or {}).get("raw") or _card_task_text(card_text)
     _model = getattr(policy, "model", None)
+    _audited_ok = (res.get("status") == "OK")
     if _task_text and _model and policy.kind == "llm":
         nar = narrate_answer(_task_text, ans, res.get("steps"), _model,
                              (brief or {}).get("kind_label"))
@@ -738,6 +741,21 @@ def main():
             with open(os.path.join(outdir, "answer.md"), "w", encoding="utf-8") as fh:
                 fh.write(nar["text"].rstrip() + "\n")
             print("  自然语言整理：完成")
+            # —— 审计通过后，把自然语言回答按「题 / 答」打印出来 ——
+            # 这是给人在控制台直接读的最终结论，不再需要从 JSON 里抠键值。
+            # 答：只写在首行，回答的正文自然换行（子标题/条目保留原缩进），
+            # 不给每行都叠一个"答："，那会让子标题读着像多条回答。
+            if _audited_ok:
+                _q = " ".join((_task_text or "").strip().split("\n"))
+                print("\n  ———— 题目与回答 ————")
+                print("  题：%s" % (_q[:400] + ("…" if len(_q) > 400 else "")))
+                _body = [ln.rstrip() for ln in nar["text"].strip().split("\n")]
+                _body = [ln for ln in _body if ln]        # 去空行
+                if _body:
+                    print("  答：" + _body[0].lstrip("# ").strip())
+                    for ln in _body[1:]:
+                        print("       " + ln.lstrip("# ").strip())
+                print("  ———————————————————")
         else:
             print("  自然语言整理：跳过（%s）" % nar.get("note", ""))
         # 把 narrative 一并写回 result.json（上面已 save 过一次）
