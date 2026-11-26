@@ -90,8 +90,12 @@ python studio.py export --runs ag_ifc,edit09,edit02   # 单文件快照，双击
 - **中：对话与过程。** 顶部是出题入口（一段自然语言 + 模型下拉/上传），下面是逐步的「为什么 + 参数 +
   返回摘要」。阶段条显示各阶段条数，点击跳到该阶段第一步；底部回放条有播放/单步/拖动/倍速/
   全部-逐条，以及 **存档 / 读档 / 新一轮**。
-- **右：三张可折叠卡。** 几何画面（场景 + 视角）、读写层（读层测量 / 写层改前改后与产物）、
-  答案（值 + 审计 + 证据步骤）。点标题折叠，三张互不影响。
+- **右：三张可折叠卡。** 几何画面（实时三维 + 步骤标注 + 焦点相机，见下）、读写层
+  （读层测量 / 写层改前改后与产物）、答案（值 + 审计 + 证据步骤 + 自然语言回答）。点标题折叠，三张互不影响。
+
+**几何画面**用 three.js 实时渲染：可拖/滚/平移/点选实体，**步骤标注（marks）**把每步工具
+做了什么画在三维上（测量线、角度弧、切面、标记点），底部时间线滑块逐帧回看；
+**相机跟随焦点实体**（焦点占画面约 75% 且居中，其他构件半透明）。细节见下「几何画面」一节。
 
 **出题入口只有两样东西**：一段原话、一个模型文件。没有模式开关，也没有「选一道题」的列表 ——
 控制台不认识任何一道题（`studio.py` 里没有题目表，`/api/home` 也不返回题目）。
@@ -748,6 +752,47 @@ TypeError: Cannot read properties of undefined (reading 'toFixed')
 - **运行中实时更新**：`geom.live_geometry` 每 4 步或 1.5 s 重写 `geom.json`，
   更新时**不重定机位**（否则用户刚转好的视角会被一次次拽回去）
 
+### 每步工具的标注（marks）：不只「现在长什么样」，还画出「这一步做了什么」
+
+`geom.json` 新增 `marks` 字段 —— 每成功执行一步就生成一条三维注解，前端按步骤时间线
+（滑块 + ◀▶）叠加到画面上。数据源是 `loop.results[sid]`（**完整原始返回值**，
+不是被截断到 300 字的 `obs`），所以能拿到见证点、法向、切面这些精确几何量：
+
+| 工具 | 三维表现 |
+|---|---|
+| select / pick / merge / clusters / parts | 高亮**焦点实体**（`focus` 列表） |
+| distance / rank | 两见证点 + 测量线 + 数值标签 |
+| angle | 两根法向短线 + 角度弧 + 度数标签 |
+| clearance | 最近两点连线 |
+| opening_edge | 洞口底边参考线 |
+| collide | 最深穿透点 |
+| cut_plane / section | 半透明切面 + 边框 |
+| translate / rotate_axis / stretch_axis | 被改实体 |
+
+实现要点：
+- `viz/geom.py` 的 `step_marks(loop)` 遍历已成功步骤，从每步完整返回值提取 `focus/markers/lines/arcs/planes`；
+  `dump()` 加 `marks` 参数；**收尾 dump 也必须带 marks**（否则会覆盖运行中累积的标注）。
+- 前端 `applyMarks()` 在 `marksGroup`（与实体同一 `rotation.x=-90°` 坐标系）里画
+  测量线 / 标记球 / 角度弧（`QuadraticBezierCurve3`）/ 切面四边形，标签用 `CanvasTexture` 的 `Sprite`。
+- `renderMarkbar()` 渲染时间线 UI；`setMarkStep(i)` 切步 → `applyMarks` + `followFocus`。
+
+### 相机追踪：焦点对象占画面约 75% 且居中，其他构件半透明
+
+- `focusCameraOn(bb)`：`target` 设为焦点包围盒**中心**（焦点居中），距离按**水平 / 竖直两方向
+  分别算** —— 每个方向的投影半径 `max(该向尺寸/2, 深度/2)`，除以 `0.75 · tan(halfFov)`，
+  取更大的一个。这样任意朝向看过去，焦点包围盒都占约 75% 画面（不裁边、不偏小）。
+- `paintHover()` 进入**追踪模式**（有焦点实体时）：焦点实体不透明 + 高亮，
+  其余构件半透明（结构 0.22 / 普通 0.45）——焦点从一堆构件里"浮"出来。
+  追踪模式与「透视墙」开关独立。
+- 用户拖动 / 滚轮 → `userMoved = true` 停自动跟随；点「全景」按钮清零恢复跟随。
+- `initMarks()` 里补了 `followFocus()` —— 之前加载完成后相机停在全景视角不跟焦点，这是个 bug。
+
+### 遮罩清除（在跑新轮"没有三维画面"的真因）
+
+`renderView` 出题时会插入 `#geoloading` 遮罩（"正在取几何…"），但 `refreshGeom` 取到几何后
+**漏了清除**——三维其实画出来了，只是被半透明白色层盖住，看起来就是"没有三维画面"。
+修复：`refreshGeom` 末尾补两行 `remove(#geoloading / #geooverlay)`。
+
 ### 踩过的四个坑（都写在注释里了）
 
 1. **`renderer` 赋值位置**：提前赋 `VIEW.renderer = rd` 会让下一次调用以为已初始化，
@@ -765,9 +810,35 @@ TypeError: Cannot read properties of undefined (reading 'toFixed')
 python viz/test_geom.py      # 14 项：分组连续、索引不越界、坐标误差 < 1e-4、gzip < 200 KB
 node  viz/test_digest.mjs    # 6 项：摘要函数对少字段/空字段不崩
 node  viz/probe.mjs <url> "<expr>"   # CDP 读运行时状态（CDP_PORT 可改端口）
+node  viz/probe_marks.mjs    # marks 全链路：时间线 UI + 叠加组 + 焦点高亮 + 相机跟随
+node  viz/probe_focus75.mjs  # 焦点占画面 ~75% 居中 + 其他构件半透明
 node  viz/snap.mjs  <url> "#viewwrap" out.png   # 元素截图，CAM= 可预设机位
 python studio.py export --runs live3d   # 单文件导出：three 与几何都内联，双击即看
 ```
+
+## 自然语言整理：把结构化答案写成「题 / 答」
+
+agent 交的答案是结构化键值（`angle_deg: 65.0`），人读起来还要自己在脑子里拼
+「哪个键对应题目问的哪件事」。这里用**独立的一轮 LLM**（`run_agent.py` 的
+`narrate_answer`）把它们组织成直接回答题目的话——**不重算、不改任何数**，只决定措辞与顺序。
+`temperature=0`，一次调用，不重试；失败不影响已跑完的任务。
+
+- 数据源：题目原文（`brief.raw`）+ 已交答案（`values` / `unknowns`）+ 关键步骤意图。
+  `insufficient.reason` 也会整理——「为什么做不到」比空转更有价值。
+- 产物：`runs/<tag>/answer.md`（Markdown），同时写回 `result.json` 的 `narrative` 字段。
+- **控制台打印**：答案**通过审计**（`status == OK`）后，按下面的格式打印，让人直接读结论、
+  不用从 JSON 里抠键值：
+  ```
+  ———— 题目与回答 ————
+  题：量出门扇的宽度和高度。
+  答：门扇（C011）的高度为 2.03 m；宽度暂取 1.0 m（借用所在洞口净宽）…
+  ———————————————————
+  ```
+  答：只放在首行，回答正文自然缩进（不每行叠一个"答："，否则子标题读着像多条回答）。
+- **两个坑**：
+  1. 不能直接调 `LLMPolicy._endpoint(_provider(model))`——参数顺序不对；要复用 `LLMPolicy(model)` 实例。
+  2. `studio.py` 出题时别把 `title` 拼进 `raw`——否则"题："会印成「题：<title> 题目」答非所问。
+     现在 title 单独存 `brief.json`，`compile_brief` 只处理纯题目原文。
 
 ## 成本：钱花在哪、怎么省
 
