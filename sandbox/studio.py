@@ -21,6 +21,7 @@
   python studio.py export --out ../docs/demo/studio.html   # 单文件快照（含数据与画面，无需服务）
 """
 import argparse
+import gzip
 import json
 import os
 import re
@@ -334,7 +335,8 @@ def archive(tag, inline=True):
 
 CTYPE = {".png": "image/png", ".mp4": "video/mp4",
          ".html": "text/html; charset=utf-8", ".json": "application/json; charset=utf-8",
-         ".md": "text/plain; charset=utf-8", ".gltf": "model/gltf+json"}
+         ".md": "text/plain; charset=utf-8", ".gltf": "model/gltf+json",
+         ".js": "application/javascript; charset=utf-8"}
 
 
 class H(BaseHTTPRequestHandler):
@@ -343,7 +345,7 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, code, body, ctype="application/json; charset=utf-8"):
+    def _send(self, code, body, ctype="application/json; charset=utf-8", extra=None):
         if isinstance(body, (dict, list)):
             body = json.dumps(body, ensure_ascii=False, default=str).encode("utf-8")
         elif isinstance(body, str):
@@ -352,6 +354,8 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         try:
             self.wfile.write(body)
@@ -383,6 +387,26 @@ class H(BaseHTTPRequestHandler):
                 tag = os.path.basename((q.get("tag") or [""])[0])
                 since = int((q.get("since") or ["0"])[0])
                 return self._send(200, live_state(tag, since))
+            if u.path == "/api/geom":
+                tag = os.path.basename((q.get("tag") or [""])[0])
+                if not TAG_RE.match(tag or ""):
+                    raise KeyError(tag)
+                fp = os.path.join(RUNS, tag, "geom.json")
+                if not os.path.exists(fp):
+                    return self._send(404, {"error": "no geometry",
+                                            "hint": "这一轮跑的时候还没有几何导出，选一轮新的"})
+                if (q.get("probe") or [""])[0] == "1":
+                    # 运行中几何每几秒就变一次；页面 800 ms 轮询一次，
+                    # 每次都拉 500 KB 是纯浪费。先问 mtime，变了才取全量。
+                    st = os.stat(fp)
+                    return self._send(200, {"mtime": round(st.st_mtime, 3), "bytes": st.st_size})
+                with open(fp, "rb") as f:
+                    body = f.read()
+                # 几何是扁平数字数组，gzip 后只有 ~1/4；本机也省一次拷贝
+                if "gzip" in (self.headers.get("Accept-Encoding") or ""):
+                    body = gzip.compress(body, 6)
+                    return self._send(200, body, CTYPE[".json"], extra={"Content-Encoding": "gzip"})
+                return self._send(200, body, CTYPE[".json"])
             if u.path == "/api/archive":
                 tag = os.path.basename((q.get("tag") or [""])[0])
                 inline = (q.get("inline") or ["1"])[0] != "0"
@@ -394,6 +418,13 @@ class H(BaseHTTPRequestHandler):
                     return self._send(404, {"error": "no video"})
                 with open(full, "rb") as f:
                     return self._send(200, f.read(), CTYPE[".mp4"])
+            if u.path.startswith("/lib/"):
+                rel = os.path.basename(u.path[len("/lib/"):])
+                full = os.path.join(HERE, "viz", "lib", rel)
+                if not os.path.exists(full):
+                    return self._send(404, {"error": "not found"})
+                with open(full, "rb") as f:
+                    return self._send(200, f.read(), CTYPE.get(".js"))
             if u.path.startswith("/frames/"):
                 rel = u.path[len("/frames/"):]
                 full = os.path.normpath(os.path.join(RUNS, rel))
@@ -455,6 +486,11 @@ def cmd_export(a):
     payload = {"home": home_payload(), "runs": {}, "frames": {}, "live": False}
     for t in tags:
         payload["runs"][t] = run_payload(t)
+    payload["geom"] = {}
+    for t in tags:
+        gp = os.path.join(RUNS, t, "geom.json")
+        if os.path.exists(gp):
+            payload["geom"][t] = _load(gp, None)
     if a.inline:
         import base64
         for t in tags:
@@ -466,6 +502,13 @@ def cmd_export(a):
                         frames[str(f["i"])] = "data:image/png;base64," + base64.b64encode(fh.read()).decode()
             payload["frames"][t] = frames
     html = open(HTML, encoding="utf-8").read()
+    # three.js 内联进单文件：导出的意义是「双击即看」，不能依赖本机还有一个 web 服务
+    lib = os.path.join(HERE, "viz", "lib", "three.min.js")
+    lib_js = ""
+    if a.lib and os.path.exists(lib):
+        with open(lib, encoding="utf-8") as fh:
+            lib_js = "<script>%s</script>\n" % fh.read().replace("</script", "<\\/script")
+    html = html.replace('<script src="/lib/three.min.js"></script>', lib_js)
     inject = '<script>window.__STUDIO__ = %s;</script>\n' % json.dumps(
         payload, ensure_ascii=False, default=str).replace("</", "<\\/")
     from view import _sanitize_paths
@@ -477,9 +520,9 @@ def cmd_export(a):
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     with open(out, "w", encoding="utf-8") as f:
         f.write(html)
-    print("已导出 %s（%.1f MB，%d 个 run，%d 帧）" % (
+    print("已导出 %s（%.1f MB，%d 个 run，%d 帧，%d 份几何）" % (
         out, os.path.getsize(out) / 1048576.0, len(tags),
-        sum(len(v) for v in payload["frames"].values())))
+        sum(len(v) for v in payload["frames"].values()), len(payload["geom"])))
 
 
 def cmd_serve(a):
@@ -518,6 +561,8 @@ def main():
                    help="逗号分隔的 run tag，默认带三题（写层一题、读层一题、T-01）")
     e.add_argument("--inline", action="store_true", default=True)
     e.add_argument("--no-inline", dest="inline", action="store_false")
+    e.add_argument("--no-lib", dest="lib", action="store_false",
+                   help="不内联 three.js（文件小 600 KB，但三维视图不可用）")
     a = ap.parse_args()
     if a.cmd == "export":
         cmd_export(a)

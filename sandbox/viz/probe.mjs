@@ -1,5 +1,5 @@
-// 用 CDP 打开页面并读回状态：为什么 deep link / 默认运行没载入？
-const PORT = 9222;
+// CDP 探针：打开页面并读回运行时状态（默认端口 9222，可用 CDP_PORT 覆盖）
+const PORT = +(process.env.CDP_PORT || 9222);
 const raw = process.argv[2] || "http://127.0.0.1:8770/#/lab?tag=live_fix1";
 // 同一个 URL 再 navigate 不会重新加载（hash 变了才触发 hashchange），加一次性参数强制刷新
 const [base0, hash0] = raw.split("#");
@@ -26,6 +26,7 @@ ws.onmessage = (ev) => {
 await new Promise(r => ws.onopen = r);
 await send("Runtime.enable");
 await send("Page.enable");
+await send("Emulation.setDeviceMetricsOverride", {width:1680, height:1050, deviceScaleFactor:1, mobile:false});
 await send("Page.navigate", { url: URL_ });
 await new Promise(r => setTimeout(r, 7000));
 const out = await send("Runtime.evaluate", { expression: EXPR, returnByValue: true, awaitPromise: true });

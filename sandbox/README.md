@@ -344,6 +344,10 @@ ledger_audit.py    账本审计（离线）：参数重复 / 产物重复 / 同�
 replay_check.py    反事实判定（离线）：历史决定在新规则下是否仍失败
 test_orch.py       编排层改动的单测：引用别名、拆件映射、收口窗口、草稿板
 rawcards.py        从任务卡抽「题目原文」生成纯净版卡（tasks/raw/）
+viz/geom.py        场景 → 扁平几何（v/f/g），供 three.js 直接建 BufferGeometry
+viz/lib/three.min.js  three.js r149（594 KB / 149 KB gzip，内联进单文件导出）
+viz/probe.mjs      CDP 探针：读页面运行时状态与异常（CDP_PORT 可改）
+viz/snap.mjs       元素截图（CAM= 可预设机位），看三维画得对不对
 ```
 
 ## 40 个工具
@@ -707,6 +711,63 @@ TypeError: Cannot read properties of undefined (reading 'toFixed')
 **顺带纠正一个判断**：之前把「几何画面空白」当成「这一轮没有渲染帧」，
 实际上多数时候是这条 JS 崩。判断依据要看 `frames/manifest.json` 有没有内容，
 不要看页面那张图 —— 图空可能只是页面挂了。
+
+## 几何画面：从「快照」换成 three.js 实时视图
+
+原来的画面是 `PIL` 手绘的正交投影 + **画家算法**。它有三个改不掉的问题，
+都跟"画得好不好看"无关，是**读不出来**的问题：
+
+| 问题 | 表现 | 原因 |
+|---|---|---|
+| 遮挡会算错 | 家具穿过墙、该挡的地方露出 | 画家算法按三角形深度均值排序，长条三角形必然排错 |
+| 视角固定 | 只给 3 个固定偏航角，看不到顶面/背面 | 帧是离线生成好的 PNG |
+| 点不中 | 看见一块，不知道它是哪个 sid | 图里没有实体身份 |
+
+**"重不重"实测下来了，答案是不重：**
+
+| 项 | 体积 | 说明 |
+|---|---|---|
+| 场景 | 20 实体 / 9,245 顶点 / 18,426 三角面 | 赛方模型 + 测试体，固定量级 |
+| 几何数据 | **459 KB 原始 / 126 KB gzip** | 扁平 Float32 数组，4 位小数 |
+| three.js r149 | 594 KB / **149 KB gzip** | 放 `viz/lib/`，不走 CDN |
+| 传输 | 运行中先 `?probe=1` 拿 mtime，变了才取全量 | 800 ms 轮询不会重复拉 460 KB |
+| 渲染 | 18k 三角面，集显几百帧；空闲时不跑渲染循环 | 只在 dirty 时画一帧 |
+
+`viz/geom.py` 把场景导成扁平数组（`v` 顶点、`f` 索引、`g` 分组），
+前端 `new Float32Array(v)` 直接进 `BufferGeometry`，不需要再 map 一遍。
+
+### 前端做的事
+
+- **拖=转 / 滚=缩放 / 右键或 Shift=平移 / 双击=聚焦**（轨道控制自己写，不引 OrbitControls）
+- **点选实体** → 高亮 + 浮层列出「账本里哪几步引用过它」，点步骤号直接跳到那一轮
+- **透视墙**：按「厚高比 < 0.5 且薄边 < 0.32 m」识别墙/地/顶，切 FrontSide 剔除背面。
+  从外面看是实墙，镜头转进屋里自动看穿——这比 alpha=0.34 的真半透明干净得多
+  （半透明会让墙后的家具也变淡，像蒙了层雾）
+- **首帧自动定机位**：场景是 18.9 × 4.4 × 5.6 的长条，机位沿长轴偏 30°，
+  距离按 `半长轴 / tan(水平半角)` 算，再按投影后的包围盒把画面拉回中心
+- **运行中实时更新**：`geom.live_geometry` 每 4 步或 1.5 s 重写 `geom.json`，
+  更新时**不重定机位**（否则用户刚转好的视角会被一次次拽回去）
+
+### 踩过的四个坑（都写在注释里了）
+
+1. **`renderer` 赋值位置**：提前赋 `VIEW.renderer = rd` 会让下一次调用以为已初始化，
+   相机/网格还没就绪就返回 —— 现在放到初始化最后一行。
+2. **水平视角换算**：three 的 `fov` 是竖直角，水平半角必须 `atan(tan(fov/2) * aspect)`。
+   写成 `atan(tan(fov/2) * max(0.8, aspect))` 会把距离算大 17%，画面四周全是空白。
+3. **z-up → y-up**：`R_x(θ)` 把 `+z` 送到 `(0, -sinθ, cosθ)`，要送到 `+y` 必须 **θ = −90°**。
+   写成 +90° 会整个场景上下颠倒（地板在头顶、椅子腿朝天），远看还像正常的。
+4. **面板重建丢 canvas**：`renderRight` 每次整块重写 innerHTML，WebGL 的 canvas 跟着被删。
+   `renderView` 里检查 `renderer.domElement.isConnected`，掉了就重挂。
+
+### 验证
+
+```bash
+python viz/test_geom.py      # 14 项：分组连续、索引不越界、坐标误差 < 1e-4、gzip < 200 KB
+node  viz/test_digest.mjs    # 6 项：摘要函数对少字段/空字段不崩
+node  viz/probe.mjs <url> "<expr>"   # CDP 读运行时状态（CDP_PORT 可改端口）
+node  viz/snap.mjs  <url> "#viewwrap" out.png   # 元素截图，CAM= 可预设机位
+python studio.py export --runs live3d   # 单文件导出：three 与几何都内联，双击即看
+```
 
 ## 成本：钱花在哪、怎么省
 

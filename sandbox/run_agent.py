@@ -34,6 +34,7 @@ from agent import schema as sch  # noqa: E402
 from agent.loop import Loop, PHASES, PHASE_TOOLS  # noqa: E402
 from agent.policy import FallbackPolicy, LLMPolicy, RecordedPolicy, available_models  # noqa: E402
 from viz import render  # noqa: E402
+from viz import geom as vgeom  # noqa: E402
 
 PALETTE = [(243, 156, 62), (66, 118, 214), (32, 168, 138), (188, 84, 160),
            (214, 168, 40), (120, 120, 200), (200, 96, 96), (96, 176, 96)]
@@ -582,7 +583,18 @@ def main():
     bus = Bus(ledger)
     # 录制回放不需要预览：它不是给人「看着跑」的，而且回放的意义是同一串决定同一结果，
     # 不该被渲染耗时扰动。
-    tick = None if policy.kind == "recorded" else live_preview(bus, outdir)
+    if policy.kind == "recorded":
+        tick = None
+    else:
+        # 两个回调合并成一个：预览图（人眼确认"在动"）+ 几何（人自己转着看）。
+        # 分开注册会让 loop 每步调两次，节流状态也各算各的。
+        _tp = live_preview(bus, outdir)
+        _tg = vgeom.live_geometry(bus, outdir)
+
+        def tick(loop):
+            _tp(loop)
+            _tg(loop)
+
     loop = Loop(bus, ledger, policy, card_text, env["card"], a.model,
                 max_turns=a.max_turns, wall_budget=a.wall_budget,
                 # 交付类型来自管线对原话的编译：只要求测量的任务不必进写层。
@@ -616,6 +628,14 @@ def main():
     paths, vid = [], None
     if bus.scene:
         paths, vid = render_all(bus, res, outdir, a.orbits, not a.no_video, loop.results)
+        # 收尾写一份最终几何：运行中的 geom.json 停在最后一次节流点，
+        # 事后打开的人看到的可能不是「结局」。这份才是可复看的那一份。
+        try:
+            vgeom.dump(bus.scene, os.path.join(outdir, "geom.json"),
+                       tag=os.path.basename(outdir), step="final",
+                       turn=loop.turn, note="收尾 · %s" % res.get("status"))
+        except Exception:
+            pass
         # 收尾后不删 frames/live.png：页面是 800 ms 轮询，删掉会有一段 404 窗口，
         # 反而让「已结束」的那几秒显示「帧文件取不到」。它只是进度快照，
         # 完整分镜在 manifest 里，页面载入完成的运行后不再引用它。
