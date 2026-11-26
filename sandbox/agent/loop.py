@@ -183,8 +183,12 @@ class AuditError(Exception):
 
 class Loop:
     def __init__(self, bus, ledger, policy, card_text, card_path, model_path,
-                 max_turns=40, wall_budget=180.0, expect_log=None, read_only=False):
+                 max_turns=40, wall_budget=180.0, expect_log=None, read_only=False,
+                 on_tick=None):
         self.bus = bus
+        # 每轮末尾的回调：只用来出「进行中的画面」（run_agent 里的 live 预览）。
+        # 不参与决策、不改场景，异常一律吞掉 —— 渲染失败不该让解题中断。
+        self.on_tick = on_tick
         # 只读任务（原话只要求量、不要求改）不该被赶进 EDIT：那一阶段没有任何能用的工具，
         # 模型只能「用嘴交卷」——实测它会输出一段 Markdown 结论、没有工具调用，
         # 编排层只好判成 declare_insufficient。既然一句几何都没改，写层对它是空集。
@@ -264,6 +268,11 @@ class Loop:
                 self._finish("POLICY_EXHAUSTED")
                 break
             self._dispatch(act)
+            if self.on_tick is not None:
+                try:
+                    self.on_tick(self)
+                except Exception:
+                    pass
         if self.status == "RUNNING":
             self._finish(self._end_status("BUDGET_EXHAUSTED"))
         return self.report()

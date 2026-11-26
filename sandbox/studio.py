@@ -242,6 +242,9 @@ def live_state(tag, since=0):
         "elapsed_s": round(time.time() - info["t0"], 1) if info else None,
         "note": info.get("note"), "title": info.get("title"),
         "llm": info.get("llm"), "frames": len(_load(os.path.join(d, "frames", "manifest.json"), []) or []),
+        # 进行中的单帧预览（run_agent.live_preview 写的）：页面用它让「几何画面」
+        # 在跑的过程中就有东西可看，而不是一块白板 + 一个破图图标。
+        "preview": _load(os.path.join(d, "frames", "live.json"), None),
         "brief": _load(os.path.join(d, "brief.json"), None),
     }
 

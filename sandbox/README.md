@@ -671,6 +671,43 @@ python bench.py --raw --reps 2      # 用纯净卡 + 宽松判据跑
    任何一题从「3/3」掉到「2/3」都算回归，先查原因再谈收益。
 3. **一次只改一类**：四类病因分开上线，否则分不清是修好了还是被别的东西掩盖了。
 
+## 「几何画面是空的」：那次不是没渲染，是前端崩了
+
+现象：右侧「几何画面」只剩一个破图图标和 `alt="scene"` 的字样，整页停在「未载入」，
+但这一轮明明跑完了、`frames/` 里也有 PNG。
+
+诊断（`viz/probe.mjs` 连 CDP 读页面状态）：
+
+```
+TypeError: Cannot read properties of undefined (reading 'toFixed')
+  at f3 (studio.html:878)
+  at digestOf (studio.html:881)
+  at renderFeed (studio.html:776)
+  at loadRun  (studio.html:725)
+```
+
+`select` 对没有三向尺寸的实体会返回 `"dims": [null, null, null]`（**这是合法返回**，不是坏数据），
+而摘要函数 `digestOf` 直接 `x.toFixed(3)`。一个 `null` 抛异常 → `renderFeed` 中断 →
+`loadRun` 后面的 `renderRight / renderStatus` 全没执行 → 页面停在初始骨架。
+
+初始骨架里那个 `<img id="shot" alt="scene">` **没有 src**，浏览器就画成破图 + alt 文本。
+所以「没有几何画面」是两层叠出来的：**渲染崩了**，而且**空态长得像故障**。
+
+修法：
+
+| 改哪 | 改成什么 |
+|---|---|
+| `digestOf` 的 `f3` | `null` / `NaN` 显示 `?`，不再抛异常（`dims` 里出现 `null` 是正常的） |
+| `loadRun` | 五个渲染器各自 `try/catch`：坏数据只坏一块，并提示「账本与答案不受影响」 |
+| 几何画面 | 三态显式渲染：有帧 / 进行中 / 未载入，空态写清原因；`img.onerror` 把取不到的地址打出来 |
+| 进行中 | `run_agent.live_preview` 每 6 步或 2.5 s 渲染一张 `frames/live.png`（单帧 ~0.25 s），页面轮询刷新 |
+
+回归：`node viz/test_digest.mjs`（6 种少字段返回，含 `dims: [null,null,null]`）。
+
+**顺带纠正一个判断**：之前把「几何画面空白」当成「这一轮没有渲染帧」，
+实际上多数时候是这条 JS 崩。判断依据要看 `frames/manifest.json` 有没有内容，
+不要看页面那张图 —— 图空可能只是页面挂了。
+
 ## 成本：钱花在哪、怎么省
 
 一次 T01-3（37 轮）的实测，用量由 `run_agent.py` 写进 `result.json` 的 `llm_usage`：

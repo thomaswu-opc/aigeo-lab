@@ -21,6 +21,7 @@ import math
 import os
 import re
 import sys
+import time
 
 import numpy as np
 
@@ -237,6 +238,52 @@ def scene_scope(results):
         if isinstance(out, dict) and out.get("groups"):
             return set(out["groups"][0].get("sids") or [])
     return None
+
+
+def live_preview(bus, outdir, every=6, min_gap=2.5):
+    """跑的过程中出一张「现在的场景」——只写 frames/live.png 与 frames/live.json。
+
+    为什么需要它：控制台的「几何画面」以前只在收尾时才有帧，运行中的整段过程
+    是一块白板（加一个 alt="scene" 的破图图标）。实测时最容易怀疑「是不是坏了」的时刻
+    恰好就是这一段。单帧渲染约 0.25 s，每 6 步或 2.5 s 一次，100 轮总计 ~4 s，可以接受。
+
+    写入用「临时文件 + 原子替换」：页面是 800 ms 轮询一次，直接覆盖会读到半张 PNG。
+    """
+    frames_dir = os.path.join(outdir, "frames")
+    os.makedirs(frames_dir, exist_ok=True)
+    png = os.path.join(frames_dir, "live.png")
+    meta_p = os.path.join(frames_dir, "live.json")
+    state = {"n": -1, "t": 0.0}
+
+    def _cb(loop):
+        if not bus.scene:
+            return
+        n = len(loop.steps)
+        now = time.time()
+        # 第一条可画的步骤（load 之后）立刻出图；此后按步数或时间节流。
+        if state["n"] >= 0 and (n - state["n"] < every and now - state["t"] < min_gap):
+            return
+        last = loop.steps[-1] if loop.steps else {}
+        title = "进行中 · 第 %d 步 · %s" % (loop.turn, last.get("tool") or "—")
+        cap = "%s / %s · 画面随账本更新，收尾时生成完整分镜" % (
+            loop.phase, (last.get("why") or "")[:60])
+        tmp = png + ".tmp.png"
+        try:
+            render.frame(bus.scene, tmp, yaw=34, pitch=26,
+                         title=title, caption=cap)
+            os.replace(tmp, png)
+            save_json(meta_p, {"ts": round(now, 3), "turn": loop.turn, "step": last.get("id"),
+                               "tool": last.get("tool"), "phase": loop.phase,
+                               "title": title, "caption": cap, "n_solids": len(bus.scene)})
+            state["n"], state["t"] = n, now
+        except Exception:
+            # 渲染失败不能中断解题：把临时文件清掉，等下一个窗口重试。
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+    return _cb
 
 
 def render_all(bus, res, outdir, orbits=3, video=True, results=None):
@@ -533,11 +580,15 @@ def main():
            "t0": __import__("time").strftime("%Y-%m-%d %H:%M:%S")}
 
     bus = Bus(ledger)
+    # 录制回放不需要预览：它不是给人「看着跑」的，而且回放的意义是同一串决定同一结果，
+    # 不该被渲染耗时扰动。
+    tick = None if policy.kind == "recorded" else live_preview(bus, outdir)
     loop = Loop(bus, ledger, policy, card_text, env["card"], a.model,
                 max_turns=a.max_turns, wall_budget=a.wall_budget,
                 # 交付类型来自管线对原话的编译：只要求测量的任务不必进写层。
                 # 用 --card 跑既有任务卡时保持原行为（None → False）。
-                read_only=bool(brief and brief.get("kind") == "measure"))
+                read_only=bool(brief and brief.get("kind") == "measure"),
+                on_tick=tick)
     res = loop.run()
     if hasattr(policy, "usage"):
         # 用量必须在跑完之后再取一次：env 在开始时构建，那时还没有任何请求。
@@ -565,6 +616,17 @@ def main():
     paths, vid = [], None
     if bus.scene:
         paths, vid = render_all(bus, res, outdir, a.orbits, not a.no_video, loop.results)
+        # 收尾后不删 frames/live.png：页面是 800 ms 轮询，删掉会有一段 404 窗口，
+        # 反而让「已结束」的那几秒显示「帧文件取不到」。它只是进度快照，
+        # 完整分镜在 manifest 里，页面载入完成的运行后不再引用它。
+        _lp = os.path.join(outdir, "frames", "live.json")
+        if os.path.exists(_lp):
+            try:
+                _m = json.load(open(_lp, encoding="utf-8"))
+                _m.update({"done": True, "status": res["status"]})
+                save_json(_lp, _m)
+            except Exception:
+                pass
     write_report(outdir, res, env, paths, vid)
 
     print("\n=== agent · %s ===" % a.tag)

@@ -279,6 +279,9 @@ table.task td{padding:9px 12px;border-bottom:1px solid var(--line2);font-size:12
   .wtab th{text-align:left;font-weight:600;color:var(--ink2);border-bottom:1px solid var(--line);padding:2px 4px}
   .wtab td{padding:2px 4px;border-bottom:1px solid #f0f2f4;font-family:var(--mono)}
   .empty{color:var(--dim);font-size:11.5px;padding:8px 2px;line-height:1.7}
+  .shotempty{color:var(--dim);font-size:11.5px;line-height:1.9;text-align:center;padding:34px 12px;
+    border:1px dashed var(--line,#e3e6ea);border-radius:8px;background:#fafbfc}
+  .shotempty code{font-size:10.5px;word-break:break-all;color:var(--ink2)}
   .rfoot{font:10px var(--mono);color:var(--dim);line-height:1.7;padding:2px 3px}
 
   ::-webkit-scrollbar{width:9px;height:9px}
@@ -687,7 +690,8 @@ function startPolling(){
         setCursor(S.idx);
       }
       renderBar(); renderStatus();
-      if(r.done){ stopPolling(); await loadRun(r.tag, true); }
+      if(!r.done) renderShot();      // 进行中的预览：ts 变了才重建，不会闪
+      if(r.done){ stopPolling(); _shotKey=""; await loadRun(r.tag, true); }
       else if(!r.running && r.status!=="RUNNING"){
         stopPolling();
         setNote("进程提前结束（"+r.status+"）：看下方时间线里的最后一条。","bad");
@@ -699,7 +703,7 @@ function stopPolling(){ if(S.poll){ clearInterval(S.poll); S.poll=null; } }
 
 /* ---------------- 载入一个已完成运行 ---------------- */
 async function loadRun(tag, keepComposer){
-  stopPolling();
+  stopPolling(); _shotKey="";
   let run;
   if(BOOT && BOOT.runs && BOOT.runs[tag]){
     run = BOOT.runs[tag];
@@ -718,9 +722,16 @@ async function loadRun(tag, keepComposer){
   S.tab = hasRead ? "read" : (hasWrite ? "write" : "read");
   S.liveTag = null; S.idx = 0; S.scene = 0; S.orbit = 0; S.toolSel = null;
   S.playing = false;
-  renderRail(); renderFeed(); renderBar(); renderRight(); renderStatus();
-  if(keepComposer) renderComposer();
-  setCursor(0);
+  // 每个渲染器独立兜底：一个坏数据只坏一块，不能让整页停在「未载入」。
+  const safe = (name, fn) => { try{ fn(); }catch(e){
+    console.error("[render:"+name+"]", e);
+    setNote("界面渲染出错（"+name+"）："+e.message+" —— 账本与答案不受影响，可继续看另外两块。","bad");
+  }};
+  _shotKey="";
+  safe("rail", renderRail); safe("feed", renderFeed); safe("bar", renderBar);
+  safe("right", renderRight); safe("status", renderStatus);
+  if(keepComposer) safe("composer", renderComposer);
+  safe("cursor", ()=>setCursor(0));
 }
 
 /* ---------------- 中：对话流 ---------------- */
@@ -871,12 +882,15 @@ function digestOf(s){
     if(sids.length) return `${sids.length} 个实体：${sids.slice(0,6).join(" ")}`;
     return s.slice(0,300);
   }
-  const f3 = x => (Math.abs(x)>=100 ? x.toFixed(1) : x.toFixed(3));
+  // dims 里可能出现 null（实体没有可分离的三向尺寸）。以前这里直接 x.toFixed，
+  // 一个 null 就让 renderFeed 抛异常，loadRun 后面的 renderRight/renderStatus 全没执行 ——
+  // 页面停在「未载入 + 空白画面」，看起来像「没有几何画面」，其实是渲染崩了。
+  const f3 = x => (x==null || isNaN(x)) ? "?" : (Math.abs(x)>=100 ? x.toFixed(1) : x.toFixed(3));
   if(j==null) return String(s||"").slice(0,300) || "（无返回）";
   if(j.meta && j.solids) return `读入 ${j.solids.length} 个实体 · ${j.meta.format} · 单位 ${j.meta.unit}（${j.meta.unit_source||"?"}）`;
-  if(j.items) return `${j.items.length} 条命中 · `+j.items.slice(0,4).map(i=>`${i.sid}[${(i.dims||[i.d0,i.d1,i.d2]).map(f3).join("×")}]`).join("  ");
+  if(j.items) return `${j.items.length} 条命中 · `+j.items.slice(0,4).map(i=>`${i.sid||"?"}[${(i.dims||[i.d0,i.d1,i.d2]).map(f3).join("×")}]`).join("  ");
   if(j.item && j.item.sid) return `对齐到 ${j.item.sid} · ${(+j.item.value).toFixed(6)} m`;
-  if(j.rows && j.rows.length) return `${j.rows.length} 行 · `+j.rows.slice(0,4).map(r=>`${r.sid||r.b}=${(+r.value).toFixed(6)}`).join("  ");
+  if(j.rows && j.rows.length) return `${j.rows.length} 行 · `+j.rows.slice(0,4).map(r=>`${r.sid||r.b}=${isNaN(+r.value)?"?":(+r.value).toFixed(6)}`).join("  ");
   if(j.groups) return `${j.groups.length} 个互不相连的组 · `+j.groups.map(g=>`c${g.cid}:${g.n}`).join("  ");
   if(j.value!=null && j.witness_a) return `${(+j.value).toFixed(6)} m · 见证点 (${j.witness_a.map(x=>+x.toFixed(2)).join(", ")}) → (${j.witness_b.map(x=>+x.toFixed(2)).join(", ")})`;
   if(j.info && j.axes) return `覆盖率 ${j.info.coverage} · ${j.info.n_clusters||"?"} 簇法向 · 轴对齐 ${j.info.is_axis_aligned}`;
@@ -960,9 +974,9 @@ function renderRight(){
   const meta = (r&&r.meta)||{};
   $("right").innerHTML = `
     <section class="rcard ${S.open.geo?"":"closed"}" data-k="geo">
-      <button><b>几何画面</b><span>${(r&&r.frames&&r.frames.length)?r.frames.length+" 帧":"—"}</span><i>▾</i></button>
+      <button><b>几何画面</b><span>${geoCount()}</span><i>▾</i></button>
       <div class="body">
-        <div id="shotwrap"><button class="navb l" id="sl">‹</button><img id="shot" alt="scene"><button class="navb r" id="sr">›</button></div>
+        <div id="shotwrap"></div>
         <div class="cap" id="cap"></div><div class="yaws" id="yaws"></div>
       </div>
     </section>
@@ -987,7 +1001,7 @@ function renderRight(){
   $("right").querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>{
     S.tab = b.dataset.tab; renderRight();
   });
-  if(has){ renderShot(); bindAns(); }
+  renderShot(); if(has) bindAns();
   renderStatus();
 }
 function ioCounts(){
@@ -1184,27 +1198,69 @@ function followScene(){
   });
   if(best!==S.scene){ S.scene=best; S.orbit=0; renderShot(); }
 }
+function geoCount(){
+  const r=S.run, n=(r&&r.frames&&r.frames.length)||0;
+  if(n) return n+" 帧";
+  if(S.liveTag){ const pv=(S.liveInfo||{}).preview; return pv&&pv.ts ? "进行中" : "准备中"; }
+  return r ? "—" : "未载入";
+}
+function shotEmpty(txt){ return `<div class="shotempty">${txt}</div>`; }
+let _shotKey = "";
 function renderShot(){
-  const img=$("shot"); if(!img) return;
-  const sc=scenes(), keys=Object.keys(sc).map(Number).sort((a,b)=>a-b);
-  if(!keys.length){
-    img.removeAttribute("src");
-    $("cap").innerHTML=`<b>还没有画面</b>${S.liveTag?"解题收尾时会生成画面（帧由账本驱动，不是录屏）":"这一轮没有渲染帧"}`;
-    $("yaws").innerHTML=""; return;
+  const box=$("shotwrap"); if(!box) return;
+  const r=S.run, frames=(r&&r.frames)||[];
+  const cap=$("cap"), yaws=$("yaws");
+  const pv=(S.liveInfo||{}).preview||null;
+  let key="", html="", capHTML="", yawHTML="";
+
+  if(frames.length){
+    const sc=scenes(), keys=Object.keys(sc).map(Number).sort((a,b)=>a-b);
+    if(!sc[S.scene]) S.scene=keys[0];
+    const list=sc[S.scene]||[]; const f=list[S.orbit]||list[0];
+    if(!f){ box.innerHTML=shotEmpty("这一轮没有渲染帧。"); return; }
+    key="run:"+r.tag+":"+f.i;
+    const inl=(BOOT&&BOOT.frames&&BOOT.frames[r.tag]&&BOOT.frames[r.tag][String(f.i)])||S.frames[String(f.i)];
+    const src=inl || (`/frames/${encodeURIComponent(r.tag)}/frames/`+encodeURIComponent("seq_"+String(f.i).padStart(3,"0")+".png"));
+    html=`<button class="navb l" id="sl" title="上一个场景">‹</button>
+          <img id="shot" alt="scene" src="${esc(src)}">
+          <button class="navb r" id="sr" title="下一个场景">›</button>`;
+    capHTML=`<b>${esc(f.title||"")}</b>${esc(f.caption||"")}`;
+    yawHTML=list.map((x,o)=>`<button class="yaw${o===S.orbit?" on":""}" data-o="${o}">${Math.round(x.yaw)}°</button>`).join("");
+  } else if(S.liveTag){
+    if(pv && pv.ts){
+      key="live:"+S.liveTag+":"+pv.ts;
+      const src=`/frames/${encodeURIComponent(S.liveTag)}/frames/live.png?t=${pv.ts}`;
+      html=`<img id="shot" alt="进行中的场景" src="${esc(src)}">`;
+      capHTML=`<b>${esc(pv.title||"进行中")}</b>${esc(pv.caption||"")}`;
+    } else {
+      key="live:"+S.liveTag+":0";
+      html=shotEmpty("正在读入模型。<br>第一条可画的步骤之后，这里每 6 步或 2.5 秒刷新一次；收尾时生成完整分镜。");
+    }
+  } else if(r){
+    key="noframes:"+r.tag;
+    html=shotEmpty("这一轮没有渲染帧：要么没有几何改动，要么收尾渲染失败。<br>答案与读写在下面两张卡里。");
+  } else {
+    key="none";
+    html=shotEmpty("还没有载入运行。<br>从左侧选一轮，或在上方写一句话开始解题。");
   }
-  if(!sc[S.scene]) S.scene=keys[0];
-  const list=sc[S.scene]||[]; const f=list[S.orbit]||list[0];
-  const meta=$("right").querySelector('[data-k="geo"] span');
-  if(meta) meta.textContent = `${keys.length} 场景 · ${list.length} 视角`;
-  if(!f){ img.removeAttribute("src"); return; }
-  const rel="frames/seq_"+String(f.i).padStart(3,"0")+".png";
-  const inl=(BOOT&&BOOT.frames&&BOOT.frames[S.run.tag]&&BOOT.frames[S.run.tag][String(f.i)])||S.frames[String(f.i)];
-  img.src = inl || (`/frames/${encodeURIComponent(S.run.tag)}/frames/`+encodeURIComponent("seq_"+String(f.i).padStart(3,"0")+".png"));
-  $("cap").innerHTML=`<b>${esc(f.title||"")}</b>${esc(f.caption||"")}`;
-  $("yaws").innerHTML=list.map((x,o)=>`<button class="yaw${o===S.orbit?" on":""}" data-o="${o}">${Math.round(x.yaw)}°</button>`).join("");
-  $("yaws").querySelectorAll(".yaw").forEach(b=>b.onclick=()=>{ S.orbit=+b.dataset.o; renderShot(); });
-  $("sl").onclick=()=>{ const i=keys.indexOf(S.scene); S.scene=keys[(i-1+keys.length)%keys.length]; S.orbit=0; renderShot(); };
-  $("sr").onclick=()=>{ const i=keys.indexOf(S.scene); S.scene=keys[(i+1)%keys.length]; S.orbit=0; renderShot(); };
+
+  // 同一张图不重建：800 ms 一次的轮询会让 img 重新加载、闪一下。
+  if(key===_shotKey) return;
+  _shotKey=key;
+  box.innerHTML=html;
+  cap.innerHTML=capHTML; yaws.innerHTML=yawHTML;
+  const im=box.querySelector("#shot");
+  if(im) im.onerror=()=>{
+    // 破图要能自证：把取不到的地址写出来，而不是留一个 alt="scene" 的图标让人猜。
+    box.innerHTML=shotEmpty("帧文件取不到（HTTP 404）。<br><code>"+esc(im.getAttribute("src"))+"</code>");
+    cap.innerHTML="";
+  };
+  const sl=$("sl"), sr=$("sr");
+  if(sl) sl.onclick=()=>{ const ks=Object.keys(scenes()).map(Number).sort((a,b)=>a-b);
+    const i=ks.indexOf(S.scene); S.scene=ks[(i-1+ks.length)%ks.length]; S.orbit=0; _shotKey=""; renderShot(); };
+  if(sr) sr.onclick=()=>{ const ks=Object.keys(scenes()).map(Number).sort((a,b)=>a-b);
+    const i=ks.indexOf(S.scene); S.scene=ks[(i+1)%ks.length]; S.orbit=0; _shotKey=""; renderShot(); };
+  yaws.querySelectorAll(".yaw").forEach(b=>b.onclick=()=>{ S.orbit=+b.dataset.o; _shotKey=""; renderShot(); });
 }
 
 /* ---------------- 顶栏状态 ---------------- */
