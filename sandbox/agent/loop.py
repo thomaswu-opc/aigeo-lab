@@ -26,13 +26,21 @@ import numpy as np
 from core.runtime import TOOLS, _short
 from agent import schema as sch
 
-PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "VERIFY", "EDIT", "REVALIDATE", "REPORT"]
+# 阶段固定顺序：EDIT 是必经主干（纯测量题由编排自动 pass 占位，字段保留可审计），
+# DIFF 在 EDIT 后由编排层自动算 emit 前后几何 diff，VERIFY 拿 DIFF 的结论对照题卡校验。
+PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "EDIT", "DIFF", "VERIFY", "REPORT"]
 
 # 阶段 → 允许的几何工具。RECOVER 是唯一可跨类诊断的阶段，但也不许提交答案。
 #
-# EDIT / REVALIDATE 是写层的两个阶段，它们存在的理由只有一条：
-# 编辑不许自证。改完必须落盘、重新读回、用与编辑无关的只读工具重量一遍。
-# 所以 REVALIDATE 里没有编辑工具 —— 验证阶段继续改，就永远存在一个没被验证的中间态。
+# EDIT 是写层的编辑阶段：改完必须 emit 落盘。纯测量任务也要走这一阶段，
+# 但由编排层自动 pass 占位（edit_skipped=read_only），占位字段进账本可审计 ——
+# 不再整段跳过，这样「这题该不该编辑 / 编辑了没有」在账本里是显式可查的。
+#
+# DIFF 是编排层自动算的确定性阶段：emit 前后各抓一份几何快照逐实体对比，
+# 产出结构化 diff 报告塞进账本，不占 agent 的 LLM 轮次。它只报告「改了什么」，
+# 不判断「对不对」—— 对不对是 VERIFY 的活。
+#
+# REVALIDATE 仍存在（落盘后必须读回），但它的读回结果现在同时喂给 DIFF 做对比。
 # 语义范围表用的词。它既给出"每族允许哪些词"，也给出审计要认的"语义标签"集合 ——
 # 两处用同一份，才不会出现"范围外的词审计看不见"。
 SCOPE_LABELS = ("门", "窗", "落地窗", "无法区分")
@@ -100,6 +108,11 @@ PHASE_TOOLS = {
                    "collide", "sweep_rotate", "sweep_translate", "profile", "pockets", "levels",
                    "proj_area", "fit_sphere", "solve_section_height", "calc", "angle",
                    "openings", "assembly", "sphere_region", "contact_area"},
+    # DIFF 是编排层自动算的确定性阶段：编排层在进 DIFF 时自动做 emit 前后对比，
+    # agent 不需要调工具，只需读 diff 报告（由 _enter_diff 自动注入账本）。
+    # 工具白名单包含 select/pick（允许 agent 主动核查某个变化的实体），但编排层
+    # 会直接把 diff 报告注入 ctx，agent 无需自己查。纯测量题 DIFF 也自动 pass。
+    "DIFF":     {"select", "pick", "footprint", "calc", "answer"},
     "RECOVER":  {"principal_frame", "clusters", "segment", "select", "gaps", "load", "pick"},
     "REPORT":   {"answer"},
 }
@@ -114,13 +127,18 @@ PHASE_GOAL = {
                 "@角色名.items 引用。压不到唯一就先补判别量（厚度、法向、是否落地、有无洞口），"
                 "不要靠「看着像」选一个。",
     "MEASURE": "对已定角色的实体做题目要求的测量，拿到带见证物的数值。",
-    "VERIFY": "用与测量无关的独立路径复核结果：见证点是否在表面上、单位是否自洽、"
-              "多口径是否一致。发现问题就退回 IDENTIFY 改判据，而不是改数字。",
+    "VERIFY": "读 DIFF 给出的「改了什么」结论，对照任务卡判断改得对不对："
+              "该变的变没变、不该动的动没动、加宽后窗框是否居中。读层任务则校验测量值自洽。"
+              "发现问题就退回 EDIT（写层）或 IDENTIFY（读层判据错），而不是改数字。"
+              "编排层会把 DIFF 的 diff 报告注入本轮上下文，直接引用即可。",
     "EDIT": "按任务卡改动几何：translate 整体平移 / rotate_axis 绕指定轴旋转 / "
             "stretch_axis 沿轴分段重映射（加宽、拉高）/ cut_plane 平面切割并封口。"
             "每步都会返回改动前后的可核对量。改完必须 emit 落盘。"
-            "若任务本来就只要求测量、不需要改任何几何，直接 advance_phase —— 它会跳到 REPORT，"
-            "不要为了「待在这一阶段」去动一下模型。",
+            "纯测量任务（题目没有改动几何的要求）也会走到这一阶段，编排层会自动 pass 占位，"
+            "你只需 advance_phase 进入 DIFF；不要为了「待在这一阶段」去动一下模型。",
+    "DIFF": "编排层已自动算出 emit 前后几何 diff（哪些实体变了、bbox 从多少到多少）。"
+            "本轮上下文里有 diff 报告。你只需回看一遍确认理解了改动范围，"
+            "然后 advance_phase 进入 VERIFY——对不对是 VERIFY 的活，DIFF 只报告改了什么。",
     "REVALIDATE": "读回刚 emit 的文件，用只读工具重新量一遍改动前后的量（体积、尺寸、开口面积、封闭性、"
                   "距离、接触与扫掠）。禁止在这一阶段继续改几何 —— 只有落盘后的文件被独立量过，编辑才算成立。",
     "RECOVER": "上一步没有给出预期证据。先诊断是判据错了还是参照系错了，再回退重做。"
@@ -193,6 +211,17 @@ class Loop:
         # 模型只能「用嘴交卷」——实测它会输出一段 Markdown 结论、没有工具调用，
         # 编排层只好判成 declare_insufficient。既然一句几何都没改，写层对它是空集。
         self.read_only = bool(read_only)
+        # EDIT 必经阶段的占位标记：纯测量任务（read_only）进 EDIT 时编排层自动写
+        # 一条 pass 占位进账本，占位字段保留可审计 —— 只写一次。
+        self._edit_pass_written = False
+        # DIFF 阶段的自动计算标记：进 DIFF 时编排层算一次 emit 前后几何 diff 并注入
+        # 账本，门控据此放行。纯测量任务没有 emit，diff 报告为空（changed=[]）。
+        self._diff_done = False
+        self._diff_report = None
+        # EDIT 阶段 emit 前几何快照（进 EDIT 时抓一份，DIFF 阶段作为 before 对比基准）。
+        # 初始化为 None：只有真进了 EDIT（非 read_only）才会有值，audit 检查用它区分
+        # 「写层任务 EDIT 已进但没 emit」vs「纯测量任务压根没进 EDIT」。
+        self._edit_before_snap = None
         self.L = ledger
         self.policy = policy
         self.card_text = card_text
@@ -358,8 +387,14 @@ class Loop:
         self._closing = True
         before = self.phase
         # EDIT 不动：改完必须 emit，跑到一半收口等于什么都没做。
+        # 写层任务（非 read_only）若 EDIT 还没进过，收口先推到 EDIT（不是 VERIFY），
+        # 避免绕过写层直接交卷。纯测量任务（read_only）正常推到 VERIFY。
         if before in ("SURVEY", "IDENTIFY", "MEASURE", "RECOVER", "REVALIDATE"):
-            self.phase = "VERIFY"
+            if self.read_only or self._edit_before_snap:
+                self.phase = "VERIFY"
+            else:
+                # 写层任务：EDIT 还没进过，收口先到 EDIT 让 agent 改几何再 emit
+                self.phase = "EDIT"
         self.closing_note = (
             "收口窗口：只剩 %d 轮 / %.0f 秒。从现在起，**取数不再改变结论** ——"
             "把已经量到的写进 answer.values（每个数都要能指到某个步骤），"
@@ -397,6 +432,10 @@ class Loop:
             "facts": self.facts,
             "memo": self.results_memo,
             "measurements": self.measurements,
+            # DIFF 报告只在 DIFF/VERIFY 阶段给：DIFF 阶段让 agent 确认改了什么，
+            # VERIFY 阶段让 agent 对照任务卡判断改得对不对。
+            "diff_report": (self._diff_report
+                            if self.phase in ("DIFF", "VERIFY") else None),
             "failure": next((f for f in reversed(self.failures) if not f.get("resolved")), None),
             "board": {
                 "n_steps": len(self.steps),
@@ -1053,6 +1092,20 @@ class Loop:
 
     def _gate_pass(self):
         """当前阶段的推进门控是否成立（无副作用版，供 _advance 与代为推进共用）。"""
+        # EDIT 是必经阶段。纯测量任务（read_only）在这一阶段由编排层自动 pass 占位，
+        # 占位字段（edit_skipped=read_only）进账本可审计 —— 不再整段跳过写层。
+        if self.phase == "EDIT" and self.read_only and not self._edit_pass_written:
+            self._edit_pass_written = True
+            sid = "edit_pass"
+            self.steps.append({
+                "id": sid, "phase": "EDIT", "tool": "pass",
+                "why": "纯测量任务：题目没有改动几何的要求",
+                "obs": json.dumps({"edit_skipped": "read_only",
+                                   "note": "纯测量任务，EDIT 阶段自动 pass 占位。"
+                                           "字段保留以供审计：确认「这题该不该编辑」在账本里是显式的。"},
+                                  ensure_ascii=False),
+            })
+            self.L.append("edit_pass", {"step": sid, "why": "read_only"})
         gate = {
             "SURVEY": lambda: {s["tool"] for s in self.steps} >= {"load"},
             # 门槛是「有一条可复核的识别结果」，不是「至少两个」：只点名一个角色的题目
@@ -1061,14 +1114,24 @@ class Loop:
             "IDENTIFY": lambda: (self.context()["board"]["n_unique_selections"] >= 1
                                  or self.context()["board"]["n_whole_set"] >= 1),
             "MEASURE": lambda: len(self.measurements) >= 1,
-            "VERIFY": lambda: not any(f for f in self.failures if not f.get("resolved")),
             # 写层的第一条纪律：改了几何就必须落盘。
             # 「改完只在内存里体检一下就交卷」是这类任务最容易出的事 —— 报告很漂亮，
-            # 但没有任何可交付的模型。没改几何则允许空过（纯测量任务走这条）。
-            "EDIT": lambda: (not self.edits) or bool(self.emitted),
+            # 但没有任何可交付的模型。纯测量任务（read_only）由上面的自动 pass 放行。
+            "EDIT": lambda: (self.read_only and self._edit_pass_written) or bool(self.emitted),
             # 第二条纪律：落盘之后必须读回。这条是整个写层的地基 ——
             # 没有它，agent 可以在内存里改完、自报体检通过，而磁盘上什么都没变。
-            "REVALIDATE": lambda: bool(self.emitted) and bool(self.reloaded & self.emitted),
+            # 纯测量任务没有 emit，DIFF 自动 pass，REVALIDATE 同样放行（无落盘可读回）。
+            "REVALIDATE": lambda: (self.read_only
+                                   or (bool(self.emitted) and bool(self.reloaded & self.emitted))),
+            # DIFF 是编排层自动算的确定性阶段：进 DIFF 时 _enter_diff 已把 diff 报告
+            # 算好注入账本，agent 只需读报告再 advance，门控恒过。
+            "DIFF": lambda: self._diff_done,
+            # VERIFY 拿 DIFF 的结论对照任务卡校验：写层看 edit 结果是否符合要求，
+            # 读层看测量值自洽。门槛：没有未消解的失败 + 至少完成一次复核动作
+            # （measurements 非空或已 emit），避免空过直接进 REPORT。
+            "VERIFY": lambda: (not any(f for f in self.failures if not f.get("resolved"))
+                               and (len(self.measurements) >= 1 or bool(self.emitted)
+                                    or self.read_only)),
         }.get(self.phase)
         return True if gate is None else bool(gate())
 
@@ -1084,7 +1147,8 @@ class Loop:
                 "MEASURE": "至少完成一次测量（MEASURE 阶段的白名单工具）",
                 "VERIFY": "没有未消解的失败（补齐原失败缺的条目就算消解：条数要到位，"
                           "且原来那几件仍在结果里 —— 换一条路径证明同一件事同样算数）",
-                "EDIT": "改了几何就必须 emit 落盘；没改几何可以空过",
+                "EDIT": "改了几何就必须 emit 落盘；纯测量任务由编排层自动 pass 占位",
+                "DIFF": "编排层已自动算好 emit 前后 diff 报告并注入账本，agent 只需读报告",
                 "REVALIDATE": "必须读回自己刚写出的那个文件再量",
             }.get(self.phase, "阶段目标未达成")
             self.steps.append({"id": "gate", "phase": self.phase, "tool": "advance_phase",
@@ -1096,20 +1160,15 @@ class Loop:
             target = self._recover_from or "IDENTIFY"
         else:
             target = PHASES[min(i + 1, len(PHASES) - 1)]
-            # 离开 EDIT 时才知道要不要写层：这一步一次几何都没动，就没有落盘与回读可言，
-            # 直接去报告。判据是「这一阶段实际做了什么」，不是「卡片看起来像哪类题」——
-            # 后者要把题目知识塞进门控，正是这套东西一直想避免的。
-            if self.phase == "EDIT" and not self.edits:
-                target = "REPORT"
-                self.L.append("phase_skip", {"from": self.phase, "skipped": ["REVALIDATE"],
-                                             "why": "本次运行没有编辑动作，跳过复核"})
-        if self.read_only and target in ("EDIT", "REVALIDATE"):
-            self.L.append("phase_skip", {"from": self.phase,
-                                         "skipped": ["EDIT", "REVALIDATE"],
-                                         "why": "本轮只要求测量（原话没有改动几何的要求），写层没有可做的事"})
-            target = "REPORT"
         self.L.append("phase", {"from": self.phase, "to": target, "why": why})
         self.phase = target
+        # 进 EDIT 时抓一份 emit 前的几何快照，作为 DIFF 阶段 emit 后对比的 before 基准。
+        # 纯测量任务不需要快照（DIFF 自动 pass），跳过。
+        if self.phase == "EDIT" and not self.read_only:
+            self._edit_before_snap = self._geo_snapshot()
+        # 进 DIFF 时编排层自动算 emit 前后几何 diff，注入账本供 VERIFY 引用。
+        if self.phase == "DIFF":
+            self._enter_diff()
 
     def _tick_recover(self):
         """自救阶段不该是无底洞：失败消解后连续两步成功就自动返回原阶段。"""
@@ -1132,7 +1191,104 @@ class Loop:
                                     "why": "步骤 %s %s" % (step_id, kind)})
             self.phase = "RECOVER"
 
-    # ------------------------------------------------------------ 答案审计
+    # ------------------------------------------------------------ DIFF：编排层自动算
+
+    def _geo_snapshot(self):
+        """抓一份所有实体的关键几何量（sid → bbox/dims/体积/位置），用于 DIFF 前后对比。"""
+        snap = {}
+        try:
+            for S in self.bus.scene:
+                try:
+                    lo, hi = S.bbox()
+                    P = S.P
+                    snap[S.sid] = {
+                        "bbox_lo": [round(float(x), 6) for x in lo],
+                        "bbox_hi": [round(float(x), 6) for x in hi],
+                        "bbox_center": [round(float((lo[i] + hi[i]) / 2), 6) for i in range(3)],
+                        "n_vert": int(len(P)),
+                    }
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return snap
+
+    def _enter_diff(self):
+        """进 DIFF 阶段时编排层自动算 emit 前后几何 diff，注入账本。
+
+        - emit 前快照：`_edit_before_snap`（进 EDIT 时已抓）
+        - emit 后快照：从 emit 写出的文件读回几何再抓一份
+        - diff 内容：逐实体对比 bbox 变化，只报告「改了什么」、不判断「对不对」
+
+        纯测量任务（read_only）：无 emit，diff 报告 changed=[]，立即 pass。
+        """
+        self._diff_done = True
+        if self.read_only or not getattr(self, "_edit_before_snap", None):
+            self._diff_report = {"changed": [], "note": "纯测量任务或无 emit，无几何变化可对比"}
+            self._diff_done = True
+            self.steps.append({
+                "id": "diff_auto", "phase": "DIFF", "tool": "pass",
+                "why": "编排层自动算：纯测量任务无几何变化",
+                "obs": json.dumps(self._diff_report, ensure_ascii=False),
+            })
+            return
+
+        # DIFF 在 REVALIDATE 之后，此时 bus.scene 已是读回 emit 产物的状态，
+        # 直接抓一份 after 快照对比 before（无需重新 load）。
+        after_snap = {}
+        for S in self.bus.scene:
+            try:
+                lo, hi = S.bbox()
+                after_snap[S.sid] = {
+                    "bbox_lo": [round(float(x), 6) for x in lo],
+                    "bbox_hi": [round(float(x), 6) for x in hi],
+                    "n_vert": int(len(S.P)),
+                }
+            except Exception:
+                pass
+
+        # 对比：只看 bbox 是否变化
+        changed = []
+        before = self._edit_before_snap
+        for sid in sorted(set(list(before.keys()) + list(after_snap.keys()))):
+            b = before.get(sid)
+            a = after_snap.get(sid)
+            if not b and not a:
+                continue
+            if not a:
+                changed.append({"sid": sid, "change": "removed",
+                                "bbox_lo_before": b["bbox_lo"], "bbox_hi_before": b["bbox_hi"]})
+                continue
+            if not b:
+                changed.append({"sid": sid, "change": "added",
+                                "bbox_lo_after": a["bbox_lo"], "bbox_hi_after": a["bbox_hi"]})
+                continue
+            # 两边都有：看 bbox 是否变
+            bb_lo = b["bbox_lo"]
+            bb_hi = b["bbox_hi"]
+            ba_lo = a["bbox_lo"]
+            ba_hi = a["bbox_hi"]
+            moved = any(abs(bb_lo[i] - ba_lo[i]) > 1e-6 for i in range(3)) or \
+                    any(abs(bb_hi[i] - ba_hi[i]) > 1e-6 for i in range(3))
+            if moved:
+                delta_lo = [round(ba_lo[i] - bb_lo[i], 6) for i in range(3)]
+                delta_hi = [round(ba_hi[i] - bb_hi[i], 6) for i in range(3)]
+                changed.append({
+                    "sid": sid, "change": "bbox_changed",
+                    "bbox_lo_before": bb_lo, "bbox_lo_after": ba_lo,
+                    "bbox_hi_before": bb_hi, "bbox_hi_after": ba_hi,
+                    "delta_lo": delta_lo, "delta_hi": delta_hi,
+                    "dim_before": [round(bb_hi[i] - bb_lo[i], 6) for i in range(3)],
+                    "dim_after": [round(ba_hi[i] - ba_lo[i], 6) for i in range(3)],
+                })
+
+        self._diff_report = {"changed": changed, "n_changed": len(changed)}
+        self.steps.append({
+            "id": "diff_auto", "phase": "DIFF", "tool": "diff_auto",
+            "why": "编排层自动算 emit 前后几何 diff",
+            "obs": json.dumps(self._diff_report, ensure_ascii=False),
+        })
+        self.L.append("diff_computed", {"n_changed": len(changed)})
 
     def _flatten_numbers(self, obj, out):
         if isinstance(obj, bool):
@@ -1183,6 +1339,34 @@ class Loop:
     def _audit(self, sid, ans):
         """答案里的每个数字必须能在某个证据步骤的输出里找到。找不到 = 编的。"""
         ev = self._norm_evidence(ans.get("evidence"))
+
+        # 写层硬门控：EDIT 已进过（有 emit 前快照）但没 emit 落盘 → 退回 EDIT。
+        # 这是 T06 根因的最终兜底：收口窗口会把 MEASURE 直推到 VERIFY，绕过 EDIT；
+        # agent 交了"目标坐标"而没实际改几何 → 这些坐标账本里没工具返回过 → 被审计拦下。
+        # 只在 EDIT 真正进入过（`_edit_before_snap` 存在）时触发，不影响纯测量任务。
+        if not self.read_only and getattr(self, "_edit_before_snap", None) and not self.emitted:
+            problems_extra = (
+                "本次任务要求改动几何，但 EDIT 阶段没有 emit 落盘 —— 你交的是"
+                "「要改到哪」而不是「改完后的结果」。请回到 EDIT 阶段调编辑工具"
+                "（stretch_axis/translate/rotate_axis/cut_plane）真正改动几何，"
+                "然后 emit 写出模型文件，读回确认后再交卷。")
+            self.audit_rejects += 1
+            self.L.append("audit_reject", {"step": sid,
+                                           "problems": ["未 emit 落盘，写层任务必须先编辑再交卷"],
+                                           "n_evidence": len(ev)})
+            self.steps.append({
+                "id": "audit", "phase": self.phase, "tool": "answer",
+                "rejected": True, "why": "未 emit 落盘",
+                "obs": problems_extra,
+            })
+            if self.audit_rejects >= 3:
+                self._finish("AUDIT_FAILED")
+            else:
+                self.L.append("phase", {"from": self.phase, "to": "EDIT",
+                                        "why": "写层任务未 emit，退回编辑"})
+                self.phase = "EDIT"
+            return
+
         # evidence 收的是「步骤 id」，但整套提示都在教模型用 @步骤.字段.下标 的引用语法，
         # 于是它把 "@op_w5c.items" 直接写进 evidence 也就顺理成章。照字面判会把一个写法问题
         # 报成「证据不存在」——实测 T01 第 1 问在旋转副本上连续三次因此被拒、整轮判失败。

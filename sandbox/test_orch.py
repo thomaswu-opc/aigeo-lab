@@ -114,7 +114,8 @@ loop.turn = 92   # 剩余 8 轮
 check("还没量过就不催交卷", loop._maybe_close(), False)
 loop.measurements = ["w1"]
 check("剩余 8 轮触发收口", loop._maybe_close(), True)
-check("收口后阶段进 VERIFY", loop.phase, "VERIFY")
+# 非写层任务（没进过 EDIT）收口先进 EDIT，逼它改几何再 emit，而不是直接进 VERIFY 交卷
+check("收口后阶段进 EDIT（写层任务）", loop.phase, "EDIT")
 check("收口提示写明剩余轮次", "只剩 8 轮" in (loop.closing_note or ""), True)
 check("只触发一次", loop._maybe_close(), False)
 

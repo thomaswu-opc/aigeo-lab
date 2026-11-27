@@ -330,6 +330,26 @@ class LLMPolicy(Policy):
             body.append("已量到的数（工具原样返回，交卷时**直接引用**，不要凭记忆重写）：\n"
                         + ctx["measured"])
 
+        # DIFF/VERIFY 阶段把「改了什么」的 diff 报告摆出来：这是编排层自动算的确定性结论，
+        # agent 在 VERIFY 里对照任务卡判断「改得对不对」，不需要自己重新量几何。
+        dr = ctx.get("diff_report")
+        if dr is not None and ctx["phase"] in ("DIFF", "VERIFY"):
+            changed = dr.get("changed") or []
+            if changed:
+                lines = ["编排层自动算的几何 diff（emit 前后逐实体对比，只报告改了什么）："]
+                for c in changed[:20]:
+                    if c.get("change") == "bbox_changed":
+                        lines.append(
+                            "  %s: bbox_lo %s → %s, bbox_hi %s → %s (dim %s → %s)"
+                            % (c["sid"], c["bbox_lo_before"], c["bbox_lo_after"],
+                               c["bbox_hi_before"], c["bbox_hi_after"],
+                               c.get("dim_before"), c.get("dim_after")))
+                    else:
+                        lines.append("  %s: %s" % (c.get("sid"), c.get("change")))
+                body.append("\n".join(lines))
+            else:
+                body.append("编排层自动算的几何 diff：本次无几何变化（纯测量任务或未 emit）。")
+
         if ctx.get("closing"):
             # 收口提示放在最后一行：模型对「正文末尾」的指令服从度最高，
             # 而这一条要压过前面所有「再确认一次」的冲动。
