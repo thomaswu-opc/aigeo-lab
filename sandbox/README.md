@@ -189,6 +189,7 @@ python studio.py export --runs ag_ifc,edit09,edit02   # 单文件快照，双击
 | **答案审计** | `_audit` | 提交的每个数字必须能在某个证据步骤的输出里真实出现过（1e-6 相对容差）。**「编一个看起来合理的数」在结构上不可能通过**。空 `values` 直接拒：它曾经换来一个绿色的 `OK`（T09 有一次 54 轮后交 `{}`，因为审计只管「数字有没有出处」，什么都不写就天然通过）。量不出来应该走 `declare_insufficient`，那是诚实的终态 |
 | **语义标签的审计** | `_audit` + 族 facts | 答了「门 / 窗 / 落地窗 / 无法区分」，标签必须落在该族 facts 允许的范围里（范围由 grounded、下框、扇推出），且 evidence 里必须引用算族的那一步。**「标签是证据的结论」，不是形容词** |
 | **预算 / 停滞** | `max_turns` / `_sig_count` | 同一调用重复三次判停滞；墙钟上限。收尾状态按「被什么挡住」命名：`GATE_BLOCKED` / `AUDIT_FAILED` / `INSUFFICIENT_EVIDENCE`。几何被改过之后签名计数清空 —— 「改前量一次、改后量一次」是写层最该做的动作，不能判成原地打转 |
+| **语义记忆 facts / 结果 memo** | `loop._extract_facts` / `loop._memo_result` | **过程可压缩、结论必须保留**。观察滑出 `keep_full=4` 窗口会被压成一行表格，若只存原始观察，语义结论（哪面墙是门墙、哪个是框）就跟着丢 —— agent 推出「门墙是 C005」后算夹角又用 C006，自己跟自己矛盾（实测 T01-3 答 25°≠65°）。`_extract_facts` 从 `openings`(grounded/sill_z)、`assembly`(wall/grounded/opening)、`select`(dims 最薄边>0.05m=框) 提炼参照物身份判据，固化进 `self.facts`；`_memo_result` 每步核心结论提炼成结构化 JSON。两者每轮随 `ctx` 传给 LLM（`policy._messages` 渲染「已确认的语义事实，不要推翻」）。**只做搬移+标准化，不替 agent 选词** |
 
 ## 写层（EDIT）：改完必须落盘再读回
 
