@@ -418,29 +418,62 @@ def t_rotate_axis(bus, sids, pivot, axis, angle_deg):
 
 
 @tool("stretch_axis",
-      "沿某一坐标轴做分段线性重映射：给若干锚点对 [旧坐标, 新坐标]，锚点之间线性插值、"
-      "两端按最外段斜率外推。这是「参数联动」的通用表达 —— 换锚点即换参数，几何随之重建。",
+      "沿某一坐标轴做分段线性重映射。两种用法择一："
+      "① 给 anchors（若干 [旧坐标, 新坐标] 锚点对，锚点之间线性插值、两端按最外段斜率外推），"
+      "这是「参数联动」的通用表达；"
+      "② 给 anchor_side（\"lo\" 或 \"hi\"）+ delta（自由端位移），工具**按每个实体自己的包围盒**"
+      "自动算区间：锚定端坐标不变，自由端 = 原坐标 + delta。"
+      "用法②推荐用于「加宽/加长/加高且一端固定」：多个实体（如地板+后墙）范围不同时，"
+      "锚点会按各自范围推导，避免共用 anchors 导致范围不一致的一端漂移。",
       {"sids": "list 受影响的实体 sid 列表",
        "axis": "int 0/1/2 对应 x/y/z",
-       "anchors": "list [[from,to],...] 至少 2 对，按 from 升序，如 [[4.6,4.6],[9.4,11.4],[9.6,11.6]]"},
-      pre="anchors 严格递增且 at 两两不等；实体顶点按该轴分量落段",
-      degrade="锚点少于 2 对时直接报错，不做默认值猜测；段外按端点斜率外推，会拉伸到无穷远，"
-              "故跨过整个实体的锚点应显式给出",
-      returns="{stretched:[{sid,n_vert,max_shift,bbox_before,bbox_after}], anchors, axis}",
+       "anchors": "list [[from,to],...] 至少 2 对，按 from 升序，如 [[4.6,4.6],[9.4,11.4],[9.6,11.6]]。"
+                  "与 anchor_side 二选一（给了 anchors 就按它映射，忽略 anchor_side）",
+       "anchor_side": "str \"lo\" 锚定最小端（自由端=最大端 +delta）/ \"hi\" 锚定最大端（自由端=最小端 +delta）。"
+                      "需与 delta 搭配",
+       "delta": "number 自由端的位移（m，带符号）。lo 锚定时最大端 +delta，hi 锚定时最小端 +delta。"
+                "需与 anchor_side 搭配"},
+      pre="anchors 用法：严格递增且 at 两两不等；实体顶点按该轴分量落段。"
+          "anchor_side 用法：lo 或 hi + delta，按每个实体自身包围盒锚定端，自由端精确 +delta",
+      degrade="anchors 与 anchor_side 都缺时直接报错；anchors 少于 2 对直接报错，不做默认值猜测；"
+              "anchors 段外按端点斜率外推，会拉伸到无穷远，故跨过整个实体的锚点应显式给出。"
+              "anchor_side 用法无外推风险（锚定端固定、自由端精确 +delta）",
+      returns="{stretched:[{sid,n_vert,max_shift,bbox_before,bbox_after}], anchors:[按实体或统一], axis, mode}",
       unit="m")
-def t_stretch_axis(bus, sids, axis, anchors):
+def t_stretch_axis(bus, sids, axis, anchors=None, anchor_side=None, delta=None):
     ax = int(axis)
-    pts = sorted(([float(a), float(b)] for a, b in anchors), key=lambda p: p[0])
-    if len(pts) < 2:
-        raise ValueError("anchors 至少需要 2 对 [from,to]")
-    fr = [p[0] for p in pts]
-    to = [p[1] for p in pts]
-    for i in range(1, len(fr)):
-        if not (fr[i] > fr[i - 1] + 1e-12):
-            raise ValueError("anchors 的 from 必须严格递增：%s" % fr)
+    mode = "anchors" if anchors else "anchor_side"
+    side = (anchor_side or "").lower()
+    if anchors:
+        pts = sorted(([float(a), float(b)] for a, b in anchors), key=lambda p: p[0])
+        if len(pts) < 2:
+            raise ValueError("anchors 至少需要 2 对 [from,to]")
+        for i in range(1, len(pts)):
+            if not (pts[i][0] > pts[i - 1][0] + 1e-12):
+                raise ValueError("anchors 的 from 必须严格递增：%s" % [p[0] for p in pts])
+        last_anchors = pts
+    else:
+        if side not in ("lo", "hi"):
+            raise ValueError("缺 anchors 时必须给 anchor_side（lo/hi）+ delta")
+        if delta is None:
+            raise ValueError("缺 anchors 时必须给 anchor_side（lo/hi）+ delta")
+        delta = float(delta)
 
     rows = []
     for S in _sids(bus, sids):
+        if mode == "anchor_side":
+            # 锚定端按每个实体自身包围盒取，避免多实体共用一套 anchors 导致
+            # 范围不同的一端漂移（T06 地板加宽漂移的根因）。
+            lo0, hi0 = S.bbox()
+            a0, a1 = float(lo0[ax]), float(hi0[ax])
+            if side == "lo":
+                b0, b1 = a0, a1 + delta
+            else:  # "hi"
+                b0, b1 = a0 + delta, a1
+            pts = [[a0, b0], [a1, b1]]
+            last_anchors = pts
+        fr = [p[0] for p in pts]
+        to = [p[1] for p in pts]
         lo0, hi0 = S.bbox()
         x = S.P[:, ax].copy()
         y = np.interp(x, fr, to)          # 段外 np.interp 用端点值(平台)，不是外推
@@ -460,9 +493,12 @@ def t_stretch_axis(bus, sids, axis, anchors):
         lo1, hi1 = S.bbox()
         rows.append({"sid": S.sid, "n_vert": int(len(S.P)), "max_shift": round(shift, 9),
                      "bbox_before": _f([lo0, hi0]), "bbox_after": _f([lo1, hi1])})
-    return {"stretched": rows, "n": len(rows), "axis": "xyz"[ax],
+    return {"stretched": rows, "n": len(rows), "axis": "xyz"[ax], "mode": mode,
             "anchors": [[round(a, 9), round(b, 9)] for a, b in pts],
-            "rule": "x' = interp(x, from→to)；段外按最外段斜率外推"}
+            "rule": ("anchor_side=%s delta=%.4f：按每个实体自身包围盒锚定%s端，自由端 %+.4f"
+                     % (side, delta, side, delta)
+                     if mode == "anchor_side"
+                     else "x' = interp(x, from→to)；段外按最外段斜率外推")}
 
 
 @tool("cut_plane",
