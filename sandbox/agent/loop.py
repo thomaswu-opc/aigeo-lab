@@ -207,6 +207,8 @@ class Loop:
         self.results = {}                        # sid -> 工具原始输出
         self.steps = []                          # 轨迹（含观察摘要与理由）
         self.roles = {}                          # 角色 -> sid
+        self.facts = {}                          # 语义事实：sid -> {grounded, kind, thick, ...}
+        self.results_memo = []                   # 结构化结果记忆：每步提炼的 {sid, tool, result} 摘要
         self.measurements = []                   # 测量步骤名
         self.failures = []                       # 未消解的失败
         self.gate_rejects = 0
@@ -392,6 +394,8 @@ class Loop:
             "steps": self.steps,
             "last": self.steps[-1] if self.steps else None,
             "roles": self.roles,
+            "facts": self.facts,
+            "memo": self.results_memo,
             "measurements": self.measurements,
             "failure": next((f for f in reversed(self.failures) if not f.get("resolved")), None),
             "board": {
@@ -851,12 +855,138 @@ class Loop:
         fresh = q - self._seen_nums
         self._seen_nums |= q
         self._meas_fresh.append((sid, len(fresh)))
+        # 结果必须保留：每一步的结论提炼成结构化 JSON 记忆，随每一轮进 LLM 上下文。
+        # 观察可以压成一行表格，但**结论不能压** —— 压掉语义结论就是矛盾的根源。
+        self._memo_result(sid, out)
+        # 语义事实固化：从 openings / assembly / select(dims) 等工具的返回里提取
+        # 参照物身份判据（落地=门/有窗台=窗、厚=框/薄=玻璃），按 sid 持久化。
+        # agent 自己算出的结论，这里只做**搬移**：不改语义、不替它选词，只是让这个
+        # 结论不会随着原始观察滑出「最近 4 步」窗口而丢失。
+        self._extract_facts(sid, out)
 
-    def _meas_spinning(self, window=5):
-        """最近 window 个测量步骤全部没有带回新数字 → 在原地换皮重问。"""
-        if len(self._meas_fresh) < window:
-            return False
-        return all(k == 0 for _, k in self._meas_fresh[-window:])
+    def _memo_result(self, sid, out):
+        """提炼这一步的结构化结果，存入 results_memo（每轮随 ctx 传给 LLM）。
+
+        过程可以压缩（obs 压成表格），但**结果必须保留**。原始 obs 里塞了太多噪声
+        （ntri、share、edge_pairs 等），LLM 用不上；这里只留「这一步到底产出了什么结论」
+        的核心键值对，供下一轮直接引用。与 _draft_board 的区别：_draft_board 只服务
+        VERIFY/REPORT 阶段且只认测量步骤；memo 每步都记、每轮都进上下文。
+
+        只记**可复核的结论键**，不记过程量（ntri/idx/unit 等噪声）。避免把整份 obs
+        原样塞进记忆——那等于没压缩，上下文会爆。
+        """
+        if not isinstance(out, dict):
+            return
+        KEEP = {
+            # 洞口：谁落地=门、谁有窗台=窗
+            "openings": ("grounded", "sill_z", "width", "height", "area"),
+            # 族：哪面墙、什么性质
+            "assembly": ("wall", "facts", "opening", "label_scope"),
+            # 距离/夹角/间隙：核心测量值
+            "distance": ("value", "a", "b", "witness_a", "witness_b"),
+            "angle": ("angle_deg", "acute_deg", "n_a", "n_b", "a", "b", "dot"),
+            "clearance": ("value", "p1", "p2"),
+            "collide": ("a", "b", "deepest"),
+            "opening_edge": ("edge", "wall", "opening"),
+            "select": ("items",),
+            "pick": ("item", "items"),
+            "footprint": ("rect", "center", "dims"),
+            "section": ("area", "height"),
+            "mesh_health": ("closed", "boundary_loops", "duplicate_faces"),
+            "parts": ("parts", "removed"),
+            "principal_frame": ("axes", "origin"),
+        }
+        keys = KEEP.get(sid.split("_")[0] if "_" in sid else sid)
+        # 工具名从 step 里拿（更可靠），但这里用 sid 前缀兜底。实际 tool 名通过调用方传入更准。
+        memo = {"sid": sid, "result": {}}
+        for k in keys or ():
+            if k in out:
+                v = out[k]
+                # 只留 JSON 可序列化的精简形式
+                if isinstance(v, dict):
+                    memo["result"][k] = {kk: vv for kk, vv in v.items()
+                                         if kk in ("grounded", "sill_z", "width", "height",
+                                                   "wall", "family", "opening", "facts",
+                                                   "label_scope") and isinstance(vv, (bool, int, float, str, list, dict))}
+                elif isinstance(v, list):
+                    memo["result"][k] = v[:6]
+                elif isinstance(v, (bool, int, float, str)):
+                    memo["result"][k] = v
+        # 只要还有非空结果就记（避免塞一堆空 memo）
+        if memo["result"]:
+            # 同一步可能被多次调用（重复），只保留最新
+            for i, m in enumerate(self.results_memo):
+                if m["sid"] == sid:
+                    self.results_memo[i] = memo
+                    return
+            self.results_memo.append(memo)
+
+    def _extract_facts(self, sid, out):
+        """从工具返回里提取「参照物身份」语义事实，按 sid 固化到 self.facts。
+
+        这是解决「自己跟自己矛盾」的根源：agent 在第 5 步推出了「门墙是 C005」，
+        到第 12 步算夹角时这个结论丢了（openings 的完整观察滑出了最近 4 步窗口）。
+        这里把**结论**（不是原始观察）持久化，每轮都进上下文。
+
+        只做搬移 + 标准化，不替 agent 选词：
+          - openings: 落地(grounded=True)→门洞、有窗台(grounded=False)→窗洞
+          - assembly: 族里每面墙的 grounded 与 opening 属性
+          - select:   dims 最薄边 > 0.05m → 框/结构；<= 0.05m → 透光件/薄板
+        纯几何判据，不依赖名称/类别。与 roomtruth 是两套实现（这里只从 agent
+        实际调用的工具返回里搬移，不做独立重算）。
+        """
+        if not isinstance(out, dict):
+            return
+        tool = sid.split("_")[0] if "_" in sid else sid
+        try:
+            if tool == "openings":
+                for o in (out.get("openings") or []):
+                    if not isinstance(o, dict) or "center" not in o:
+                        continue
+                    # openings 不带 sid，无法按实体归类 —— 用洞口中心近似锚定。
+                    # 真正要的是「这面墙是门墙还是窗墙」，需要知道洞口属于哪面墙，
+                    # 所以这里只记通用事实：这个洞口是门(落地)还是窗(有窗台)。
+                    key = "opening@%.2f_%.2f" % (o.get("center", [0, 0])[0],
+                                                 o.get("center", [0, 0])[1])
+                    self.facts[key] = {
+                        "grounded": o.get("grounded"),
+                        "sill_z": o.get("sill_z"),
+                        "width": o.get("width"),
+                        "height": o.get("height"),
+                    }
+            elif tool == "assembly":
+                for f in (out.get("families") or []):
+                    if not isinstance(f, dict):
+                        continue
+                    wall = f.get("wall")
+                    if wall:
+                        ft = f.get("facts") or {}
+                        self.facts[wall] = {
+                            "grounded": ft.get("grounded"),
+                            "sill_z": (f.get("opening") or {}).get("sill_z"),
+                            "opening_w": (f.get("opening") or {}).get("width"),
+                            "opening_h": (f.get("opening") or {}).get("height"),
+                            "label_scope": f.get("label_scope"),
+                            "_src": "assembly",
+                        }
+            elif tool == "select":
+                for it in (out.get("items") or []):
+                    if not isinstance(it, dict) or "sid" not in it:
+                        continue
+                    dims = it.get("dims")
+                    if isinstance(dims, (list, tuple)) and len(dims) >= 3:
+                        thinnest = float(min(dims))
+                        # 厚薄判据：厚=框/结构，薄=玻璃/画心。阈值 0.05m 是工程经验值
+                        #（窗框 10-15cm、画框 5-8cm、玻璃 3-5mm、画心 2-3cm）。
+                        self.facts[it["sid"]] = {
+                            "thinnest_m": round(thinnest, 4),
+                            "kind": "frame_or_struct" if thinnest > 0.05 else "thin_plate",
+                            "_src": "select",
+                        }
+        except Exception:
+            # facts 提取失败不影响主流程 —— 它只是辅助记忆，不是审计依据。
+            pass
+
 
     def _refund(self, sid):
         """重复的只读调用不消耗轮次预算。
