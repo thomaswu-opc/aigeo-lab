@@ -931,7 +931,8 @@ class Loop:
         只做搬移 + 标准化，不替 agent 选词：
           - openings: 落地(grounded=True)→门洞、有窗台(grounded=False)→窗洞
           - assembly: 族里每面墙的 grounded 与 opening 属性
-          - select:   dims 最薄边 > 0.05m → 框/结构；<= 0.05m → 透光件/薄板
+          - select:   fill（体积/包围盒体积）< 0.5 → 空心框/结构；≈1 → 实心玻璃/画心薄片
+                      这是拓扑本质判据（框中空、透光件实心），不是厚度这种弱代理。
         纯几何判据，不依赖名称/类别。与 roomtruth 是两套实现（这里只从 agent
         实际调用的工具返回里搬移，不做独立重算）。
         """
@@ -973,16 +974,25 @@ class Loop:
                 for it in (out.get("items") or []):
                     if not isinstance(it, dict) or "sid" not in it:
                         continue
+                    # —— 拓扑本质判据（不是厚度）：框是**中空**的（体积只占包围盒一小部分），
+                    # 玻璃/画心是**实心**薄片（体积填满包围盒）。fill = 体积/包围盒体积。
+                    # 实测 C013 窗框 fill=0.164、C015 画框 fill=0.287（空心）；
+                    # C014 玻璃 fill=1.0、C016 画心 fill=1.0（实心）—— 区分力 100%。
+                    # 之前用「厚度 >0.05m=框」是弱代理：画框 0.08 vs 画心 0.025 只差 3 倍，
+                    # 且画框厚度 0.08 与门扇 0.04 同量级，容易混。fill 是「面与角」的本质：
+                    # 框是带内环的环状面，透光件是无内环的实心面。
+                    fill = it.get("fill")
                     dims = it.get("dims")
+                    rec = {"_src": "select"}
+                    if isinstance(fill, (int, float)):
+                        rec["fill"] = round(float(fill), 4)
+                        # 空心（fill<0.5）= 环状框/结构；实心（fill≈1）= 玻璃/画心薄片。
+                        rec["kind"] = ("hollow_frame_or_struct" if fill < 0.5
+                                       else "solid_plate")
                     if isinstance(dims, (list, tuple)) and len(dims) >= 3:
-                        thinnest = float(min(dims))
-                        # 厚薄判据：厚=框/结构，薄=玻璃/画心。阈值 0.05m 是工程经验值
-                        #（窗框 10-15cm、画框 5-8cm、玻璃 3-5mm、画心 2-3cm）。
-                        self.facts[it["sid"]] = {
-                            "thinnest_m": round(thinnest, 4),
-                            "kind": "frame_or_struct" if thinnest > 0.05 else "thin_plate",
-                            "_src": "select",
-                        }
+                        rec["thinnest_m"] = round(float(min(dims)), 4)
+                    if len(rec) > 1:
+                        self.facts[it["sid"]] = rec
         except Exception:
             # facts 提取失败不影响主流程 —— 它只是辅助记忆，不是审计依据。
             pass
