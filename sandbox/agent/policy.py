@@ -362,6 +362,11 @@ class LLMPolicy(Policy):
             body.append("写层执行清单（你自己规划的，按顺序逐项完成，每项做完会被自动打勾 ✓）：\n"
                         + cl)
 
+        # 规划收紧提示：清单没变就别重发。同样放得靠后，压过「再规划一遍」的冲动。
+        pn = ctx.get("plan_note")
+        if pn:
+            body.append(pn)
+
         if ctx.get("closing"):
             # 收口提示放在最后一行：模型对「正文末尾」的指令服从度最高，
             # 而这一条要压过前面所有「再确认一次」的冲动。

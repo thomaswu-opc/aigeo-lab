@@ -308,6 +308,8 @@ class Loop:
         self._free = 0              # 已退还的轮次数（重复只读调用不烧预算）
         self._null_rejects = 0      # 「量到了却填 null」被拒的次数（只拒一次，防死锁）
         self.closing_note = None    # 收口提示（进上下文，也进账本）
+        self.plan_note = None       # 规划收紧提示（清单没变就别重发，进上下文）
+        self._last_plan_sig = None  # 上一次 plan_edit 的清单签名（判"清单没变"）
         self._last_select = None    # 上一步 select 的命中集合（判断"换条件有没有换来新信息"）
         self._loaded = {}           # 已读过哪些模型文件（重复 load 不重算，也不清去重计数）
         # 「这一步到底带回了新数字吗」—— 换参数而不换判据的打转，签名完全相同那条抓不到。
@@ -476,6 +478,9 @@ class Loop:
             # 超声明预算后仍是正数 —— 这正是容错区：声明已尽，但没到硬停。
             "budget_hard_left": self.hard_turns - self.turn,
             "closing": self.closing_note,
+            # 规划收紧提示：清单没变就别重发，直接 advance_phase。
+            # 只在 EDIT_PLAN 阶段且上次重发过同一份清单时给，避免污染其他阶段。
+            "plan_note": (self.plan_note if self.phase == "EDIT_PLAN" else None),
             # 复核与报告阶段常驻一张「已量到的数」：交卷时最需要的就是它。
             # 只在这两个阶段给，是因为识别/测量阶段的任务是「找下一个量」，
             # 提前贴出来会让它以为已经够了、跳过本该做的测量。
@@ -610,10 +615,38 @@ class Loop:
                 sids = [sids]
             norm.append({"tool": it["tool"], "sids": sids,
                          "target": it.get("target") or "", "done": False})
+        # 收紧：清单没变就别重发。重复 plan_edit（同一份清单）是幂等的，
+        # 但会无谓烧轮 —— 实测 T06 在 EDIT_PLAN 把同一份 7 项清单重发 15 次才 advance。
+        # 给 agent 一句"清单没变就直接 advance_phase"的提示，让它停下来推进而不是重发。
+        sig = self._plan_sig(norm)
+        if self._last_plan_sig is not None and sig == self._last_plan_sig:
+            self.plan_note = (
+                "规划未变化：这份 checklist 和上一份完全相同（%d 项）。"
+                "你已经在 EDIT_PLAN 里规划好了，直接调用 advance_phase(reason=\"规划完成\") "
+                "进 EDIT 开始执行，不要重发同一份 plan_edit —— 重发不产生任何新东西，"
+                "只会浪费轮次。" % len(norm))
+            self.L.append("plan_unchanged", {"n_items": len(norm), "turn": self.turn})
+            # 仍覆盖清单（幂等），但不重复写 plan_edit 事件；把提示带进上下文。
+            self.edit_checklist = norm
+            self._edit_done = set()
+            return
+        self._last_plan_sig = sig
+        self.plan_note = None
         self.edit_checklist = norm
         self._edit_done = set()
         self.L.append("plan_edit", {"n_items": len(norm), "checklist": norm,
                                     "turn": self.turn})
+
+    @staticmethod
+    def _plan_sig(norm):
+        """checklist 的签名：tool+sids+target 的稳定序列化，用来判"清单没变"。"""
+        import hashlib
+        parts = []
+        for it in norm:
+            parts.append("%s|%s|%s" % (it.get("tool"),
+                                       ",".join(str(s) for s in it.get("sids", [])),
+                                       it.get("target") or ""))
+        return hashlib.md5("\n".join(parts).encode("utf-8")).hexdigest()
 
     def _checklist_progress(self):
         """EDIT_PLAN/EDIT 阶段渲染 checklist 进度给 agent 看。

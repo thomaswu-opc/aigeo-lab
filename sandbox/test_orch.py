@@ -330,5 +330,36 @@ for _ in range(2):
 warns = [e for e in lp_f.L if e.get("kind") == "edit_loop_warn"]
 check("同一处改动重复 2 次触发空转警告", len(warns) >= 1, True)
 
+# 7j. plan_edit 清单没变时触发收紧提示（plan_unchanged）+ plan_note 进上下文
+lp_g = mk_editloop()
+cl7j = [
+    {"tool": "stretch_axis", "sids": ["C004", "C006"], "target": "净宽"},
+    {"tool": "emit", "sids": [], "target": "落盘"},
+]
+lp_g._dispatch({"tool": "plan_edit", "checklist": cl7j})
+check("首次 plan_edit 无收紧提示", lp_g.plan_note, None)
+first_plan_events = [e for e in lp_g.L if e.get("kind") == "plan_edit"]
+check("首次 plan_edit 写事件", len(first_plan_events), 1)
+# 重发同一份清单
+lp_g._dispatch({"tool": "plan_edit", "checklist": cl7j})
+check("重发同清单触发收紧提示", lp_g.plan_note is not None
+      and "advance_phase" in lp_g.plan_note, True)
+unchanged = [e for e in lp_g.L if e.get("kind") == "plan_unchanged"]
+check("重发同清单记 plan_unchanged 事件", len(unchanged), 1)
+# 清单没变时不重复写 plan_edit 事件
+check("重发同清单不重复写 plan_edit 事件",
+      len([e for e in lp_g.L if e.get("kind") == "plan_edit"]), 1)
+# 重发后 plan_note 要进 context（EDIT_PLAN 阶段）
+check("收紧提示进 context.plan_note", "advance_phase" in (lp_g.context().get("plan_note") or ""),
+      True)
+# 清单变了 → 不触发收紧提示，正常重规划
+lp_g._dispatch({"tool": "plan_edit", "checklist": [
+    {"tool": "stretch_axis", "sids": ["C004"], "target": "净宽改法"},
+    {"tool": "emit", "sids": [], "target": "落盘"},
+]})
+check("清单变了清除收紧提示", lp_g.plan_note, None)
+check("清单变了正常写 plan_edit 事件",
+      len([e for e in lp_g.L if e.get("kind") == "plan_edit"]), 2)
+
 print("\n%d 通过 / %d 失败" % (ok, fail))
 sys.exit(1 if fail else 0)
