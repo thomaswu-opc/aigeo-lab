@@ -355,6 +355,13 @@ class LLMPolicy(Policy):
             else:
                 body.append("编排层自动算的几何 diff：本次无几何变化（纯测量任务或未 emit）。")
 
+        # EDIT_PLAN/EDIT 阶段把 checklist 进度摆出来：这是 agent 自己规划的执行清单，
+        # EDIT 阶段盯着「还有哪个 ☐ 没做」能防它反复改同一处（空转）或漏掉 emit。
+        cl = ctx.get("checklist")
+        if cl and ctx["phase"] in ("EDIT_PLAN", "EDIT"):
+            body.append("写层执行清单（你自己规划的，按顺序逐项完成，每项做完会被自动打勾 ✓）：\n"
+                        + cl)
+
         if ctx.get("closing"):
             # 收口提示放在最后一行：模型对「正文末尾」的指令服从度最高，
             # 而这一条要压过前面所有「再确认一次」的冲动。
@@ -372,7 +379,8 @@ class LLMPolicy(Policy):
             "messages": self._messages(ctx),
             "tools": [t for t in sch.full_specs()
                       if t["function"]["name"] in set(ctx["tools"]) | {"advance_phase",
-                                                                      "declare_insufficient"}],
+                                                                      "declare_insufficient",
+                                                                      "plan_edit"}],
             "tool_choice": "auto",
             "temperature": self.temperature,
         }
@@ -426,6 +434,11 @@ class LLMPolicy(Policy):
         if name == "declare_insufficient":
             return {"tool": "declare_insufficient", "why": args.get("reason", ""),
                     "missing": args.get("missing", [])}
+        if name == "plan_edit":
+            # plan_edit 是控制类工具：checklist 由编排层拦截处理，不进几何总线。
+            # 整个 args（含 checklist）原样传给 loop._handle_plan_edit。
+            return {"tool": "plan_edit", "why": args.get("reason", ""),
+                    "checklist": args.get("checklist", [])}
         why = args.pop("why", None) or ""
         exp = args.pop("expect_n", None)
         label = args.pop("label", None)

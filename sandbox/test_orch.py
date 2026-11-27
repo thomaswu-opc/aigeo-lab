@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.runtime import Bus
 from tools.world import Solid
 from tools.shape import t_parts
+import tools.ops  # noqa: F401 — 注册全部工具（含 EDIT_TOOLS：stretch_axis/translate 等）
 from agent.loop import Loop
 
 ok = fail = 0
@@ -234,6 +235,100 @@ check("未超声明耗尽 → BUDGET_EXHAUSTED",
 rp = lp2.report()
 check("report 带 declared_turns", rp["declared_turns"], 40)
 check("report 带 hard_turns", rp["hard_turns"], 48)
+
+# ---------------------------------------------------------------- 7. EDIT_PLAN 规划 + checklist
+# 写层任务先 plan_edit 出 checklist 再进 EDIT 逐项执行，最后一项 emit；
+# EDIT 内同一处改动重复 ≥2 次判空转。这是防「左挪 1mm 右挪 1mm」死循环的核心。
+
+def mk_editloop():
+    """构造一个已进 EDIT_PLAN 的写层 loop（非 read_only）。"""
+    b = Bus(ledger())
+    lp_ = Loop(b, ledger(), FakePolicy(), "card", "card.md", "m.ifc",
+               max_turns=60, wall_budget=300.0, read_only=False)
+    lp_.phase = "EDIT_PLAN"
+    return lp_
+
+# 7a. EDIT_PLAN 阶段在白名单里，且只允许 plan_edit + advance_phase
+from agent.loop import PHASE_TOOLS
+check("PHASES 含 EDIT_PLAN（MEASURE 后）", PHASE_TOOLS.get("EDIT_PLAN"),
+      {"plan_edit", "advance_phase"})
+
+# 7b. EDIT_PLAN 门控：没规划时被拒
+lp_e = mk_editloop()
+check("EDIT_PLAN 未规划门控被拒", lp_e._gate_pass(), False)
+
+# 7c. plan_edit 合法 checklist → 存下并过门控
+lp_e._dispatch({"tool": "plan_edit", "checklist": [
+    {"tool": "stretch_axis", "sids": ["C004", "C006"], "target": "净宽 4.8→6.0"},
+    {"tool": "translate", "sids": ["C007"], "target": "右墙随动 +1.2"},
+    {"tool": "reopen_round", "sids": ["C006"], "target": "方窗改同面积圆窗"},
+    {"tool": "emit", "sids": [], "target": "落盘"},
+]})
+check("plan_edit 存下 checklist（4 项）", len(lp_e.edit_checklist), 4)
+check("EDIT_PLAN 规划后门控放行", lp_e._gate_pass(), True)
+check("checklist 首项 tool", lp_e.edit_checklist[0]["tool"], "stretch_axis")
+
+# 7d. plan_edit 拒绝空 checklist
+lp_e2 = mk_editloop()
+lp_e2._dispatch({"tool": "plan_edit", "checklist": []})
+check("空 checklist 被拒（不存）", lp_e2.edit_checklist, [])
+
+# 7e. plan_edit 拒绝最后一项非 emit
+lp_e3 = mk_editloop()
+lp_e3._dispatch({"tool": "plan_edit", "checklist": [
+    {"tool": "stretch_axis", "sids": ["C004"], "target": "x"},
+]})
+check("最后一项非 emit 被拒", lp_e3.edit_checklist, [])
+
+# 7f. plan_edit 拒绝非法工具（answer 不在 EDIT 白名单）
+lp_e4 = mk_editloop()
+lp_e4._dispatch({"tool": "plan_edit", "checklist": [
+    {"tool": "answer", "sids": [], "target": "x"},   # answer 不在 EDIT 白名单
+    {"tool": "emit", "sids": [], "target": "落盘"},
+]})
+check("非 EDIT 工具被拒", lp_e4.edit_checklist, [])
+
+# 7g. EDIT_PLAN → EDIT 推进后，context() 带 checklist 进度
+lp_e._advance("规划完成")
+check("规划后推进到 EDIT", lp_e.phase, "EDIT")
+cl = lp_e.context()["checklist"]
+check("EDIT 阶段 context 带 checklist", (cl is not None and "☐" in cl and "emit" in cl), True)
+
+# 7h. EDIT 内 checklist 打勾：edit 动作匹配 tool+sids 即标记完成
+#     用真实几何场景（stretch_axis 要真正跑到成功返回，checklist 逻辑才在 out 分支里被触发）
+from tools.world import Solid as _Solid
+_box = _Solid("C004", "floor",
+              np.array([[0,0,0],[4.8,0,0],[4.8,4,0],[0,4,0],
+                        [0,0,.12],[4.8,0,.12],[4.8,4,.12],[0,4,.12]], float),
+              np.array([[0,1,2],[0,2,3],[4,6,5],[4,7,6],
+                        [0,4,5],[0,5,1],[1,5,6],[1,6,2],
+                        [2,6,7],[2,7,3],[3,7,4],[3,4,0]], int))
+lp_e.bus.scene = [_box]
+lp_e._dispatch({"tool": "stretch_axis", "args": {"sids": ["C004"], "axis": 0,
+                                                 "anchor_side": "lo", "delta": 1.2},
+                "why": "加宽房间"})
+check("stretch_axis 命中 checklist [0]", 0 in lp_e._edit_done, True)
+
+# 7i. EDIT 内同一处改动重复 ≥2 次判空转（左挪右挪死循环）
+lp_f = mk_editloop()
+lp_f.phase = "EDIT"
+lp_f._edit_before_snap = {}
+lp_f.edit_checklist = [
+    {"tool": "translate", "sids": ["C007"], "target": "x", "done": False},
+    {"tool": "emit", "sids": [], "target": "落盘", "done": False},
+]
+_box2 = _Solid("C007", "wall",
+               np.array([[0,0,0],[0.2,0,0],[0.2,4,0],[0,4,0],
+                         [0,0,3],[0.2,0,3],[0.2,4,3],[0,4,3]], float),
+               np.array([[0,1,2],[0,2,3],[4,6,5],[4,7,6],
+                         [0,4,5],[0,5,1],[1,5,6],[1,6,2],
+                         [2,6,7],[2,7,3],[3,7,4],[3,4,0]], int))
+lp_f.bus.scene = [_box2]
+for _ in range(2):
+    lp_f._dispatch({"tool": "translate", "args": {"sids": ["C007"], "delta": [0.001, 0, 0]},
+                    "why": "微调右墙"})
+warns = [e for e in lp_f.L if e.get("kind") == "edit_loop_warn"]
+check("同一处改动重复 2 次触发空转警告", len(warns) >= 1, True)
 
 print("\n%d 通过 / %d 失败" % (ok, fail))
 sys.exit(1 if fail else 0)

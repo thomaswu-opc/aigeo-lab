@@ -105,7 +105,7 @@ _KEEP = ("sid", "d0", "d1", "d2", "min_thickness", "z_min", "axis_aligned",
          # 只剩空对象就等于把配对依据从报告里删掉了。
          "plug_area", "pocket_area", "plug_sides", "pocket_sides")
 
-# 控制类工具：不进几何总线，由编排层拦截。LLM 用它们表达「阶段推进 / 放弃」。
+# 控制类工具：不进几何总线，由编排层拦截。LLM 用它们表达「阶段推进 / 放弃 / 规划写层」。
 CONTROL = [
     {"type": "function", "function": {
         "name": "advance_phase",
@@ -121,6 +121,23 @@ CONTROL = [
             "missing": {"type": "array", "items": {"type": "string"},
                         "description": "逐条列出缺失的信息"}},
             "required": ["reason", "missing"], "additionalProperties": False}}},
+    {"type": "function", "function": {
+        "name": "plan_edit",
+        "description": "EDIT_PLAN 阶段：把主任务卡按 EDIT 工具白名单分解成执行清单（checklist）。"
+                       "每项写明对哪个 sid、用哪个工具、改什么量、目标值；最后一项必须是 emit。"
+                       "规划完再 advance_phase 进 EDIT 逐项执行。",
+        "parameters": {"type": "object", "properties": {
+            "checklist": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "tool": {"type": "string", "description": "EDIT 白名单里的工具名，最后一项是 emit"},
+                    "sids": {"type": "array", "items": {"type": "string"},
+                             "description": "要改的实体 sid 列表"},
+                    "target": {"type": "string",
+                               "description": "这一项要达成什么（含目标值/判据）"}},
+                "required": ["tool", "sids", "target"], "additionalProperties": False},
+                "description": "执行清单，按执行顺序排列；最后一项 tool 必须是 emit"}},
+            "required": ["checklist"], "additionalProperties": False}}},
 ]
 
 

@@ -94,7 +94,7 @@ def tool_catalog():
             "returns": meta.get("returns") or "",
             "unit": meta.get("unit") or "",
             "phases": [p for p in ("SURVEY", "IDENTIFY", "MEASURE", "VERIFY",
-                                   "EDIT", "REVALIDATE", "REPORT") if p in phases.get(name, [])],
+                                   "EDIT_PLAN", "EDIT", "REVALIDATE", "REPORT") if p in phases.get(name, [])],
             "group": next((g for g, _, ns in GROUPS if name in ns), "其他"),
         })
     rows.sort(key=lambda r: (order.get(r["name"], 999), r["name"]))

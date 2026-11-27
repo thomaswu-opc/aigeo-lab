@@ -29,7 +29,16 @@ from agent import schema as sch
 
 # 阶段固定顺序：EDIT 是必经主干（纯测量题由编排自动 pass 占位，字段保留可审计），
 # DIFF 在 EDIT 后由编排层自动算 emit 前后几何 diff，VERIFY 拿 DIFF 的结论对照题卡校验。
-PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "EDIT", "DIFF", "VERIFY", "REPORT"]
+#
+# EDIT_PLAN 在 EDIT 前强制规划：写层任务 agent 必须先用 plan_edit 把主任务卡按工具白名单
+# 分解成 checklist（最后一项必须是 emit），再进 EDIT 按项执行、每完成一项打勾。
+# 目的是防两类失败：
+#   ① 改完忘 emit —— checklist 最后一项就是 emit，漏不掉；
+#   ② 反复做无关 edit —— 同一个 (tool, sids, delta) 签名重复 ≥2 次会被判"空转"，
+#      打断并提示回到 checklist 下一个未完成项。左挪 1mm 再右挪 1mm 这种无效 edit
+#      对最终成果没影响，但反复做就是死循环，必须打断。
+# 纯测量任务（read_only）跳过 EDIT_PLAN，直接进 EDIT，由编排层自动 pass 占位。
+PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "EDIT_PLAN", "EDIT", "DIFF", "VERIFY", "REPORT"]
 
 # 阶段 → 允许的几何工具。RECOVER 是唯一可跨类诊断的阶段，但也不许提交答案。
 #
@@ -90,6 +99,11 @@ PHASE_TOOLS = {
                  "assembly",
                  # 区域关系与贴合面积：球在区域内的体积、面接触 vs 边角接触
                  "sphere_region", "contact_area"},
+    # EDIT_PLAN：规划阶段，只允许 plan_edit 和 advance_phase。
+    # agent 必须先用 plan_edit 把主任务卡按下面的 EDIT 工具白名单分解成 checklist
+    # （最后一项必须是 emit），再进 EDIT 逐项执行。这里不放任何几何工具——
+    # 规划就是规划，动手是 EDIT 的活，混在一起就退化成「边改边想」。
+    "EDIT_PLAN": {"plan_edit", "advance_phase"},
     # answer 在这里也放行：复核本来就可能「最后一次复核就是最后一次确认」，
     # 逼它先跨到 REPORT 才能交卷，实测会变成「不敢交卷 → 反复复核同一个调用 → 停滞」。
     "VERIFY":   {"answer", "distance", "section", "select", "principal_frame", "segment",
@@ -128,6 +142,10 @@ PHASE_GOAL = {
                 "@角色名.items 引用。压不到唯一就先补判别量（厚度、法向、是否落地、有无洞口），"
                 "不要靠「看着像」选一个。",
     "MEASURE": "对已定角色的实体做题目要求的测量，拿到带见证物的数值。",
+    "EDIT_PLAN": "写层规划：先用 plan_edit 把主任务卡按 EDIT 工具白名单（translate/stretch_axis/"
+                 "cut_plane/rotate_axis/reopen_round + emit）分解成 checklist，"
+                 "每项写明「对哪个 sid、用哪个工具、改什么量、目标值是多少」；最后一项必须是 emit。"
+                 "规划完 advance_phase 进 EDIT 逐项执行。禁止在这一阶段改几何——动手是 EDIT 的活。",
     "VERIFY": "读 DIFF 给出的「改了什么」结论，对照任务卡判断改得对不对："
               "该变的变没变、不该动的动没动、加宽后窗框是否居中。读层任务则校验测量值自洽。"
               "发现问题就退回 EDIT（写层）或 IDENTIFY（读层判据错），而不是改数字。"
@@ -266,6 +284,15 @@ class Loop:
         self.edits = []                          # 成功的编辑步骤（translate/stretch/cut）
         self.emitted = set()                     # emit 写出的文件（绝对路径）
         self.reloaded = set()                    # 读回并确认是 emit 产物的文件
+        # EDIT_PLAN 的 checklist：plan_edit 时写入，EDIT 逐项打勾。
+        # 每项 {tool, sids(list), target(str), done(bool)}；最后一项固定是 emit。
+        # 空列表 = 还没规划（写层任务在 EDIT_PLAN 门控会被拦）。
+        self.edit_checklist = []
+        # 已匹配完成的 checklist 下标集合（edit 工具调用命中某项时标记）
+        self._edit_done = set()
+        # EDIT 内的 edit 工具签名计数：同一 (tool, sids, delta) 重复 ≥2 次判空转，
+        # 打断并提示回到 checklist 下一个未完成项。这是防「左挪 1mm 右挪 1mm」死循环的核心。
+        self._edit_sigs = {}
         self.answer = None
         self.status = "RUNNING"
         self.t0 = time.time()
@@ -415,7 +442,8 @@ class Loop:
         # EDIT 不动：改完必须 emit，跑到一半收口等于什么都没做。
         # 写层任务（非 read_only）若 EDIT 还没进过，收口先推到 EDIT（不是 VERIFY），
         # 避免绕过写层直接交卷。纯测量任务（read_only）正常推到 VERIFY。
-        if before in ("SURVEY", "IDENTIFY", "MEASURE", "RECOVER", "REVALIDATE"):
+        # EDIT_PLAN 也推到 EDIT：预算将尽时规划已来不及，直接进 EDIT 改几何 + emit。
+        if before in ("SURVEY", "IDENTIFY", "MEASURE", "RECOVER", "REVALIDATE", "EDIT_PLAN"):
             if self.read_only or self._edit_before_snap:
                 self.phase = "VERIFY"
             else:
@@ -467,6 +495,10 @@ class Loop:
             # VERIFY 阶段让 agent 对照任务卡判断改得对不对。
             "diff_report": (self._diff_report
                             if self.phase in ("DIFF", "VERIFY") else None),
+            # EDIT_PLAN/EDIT 阶段把 checklist 进度带出来：EDIT_PLAN 让 agent 看到自己规划的
+            # 清单，EDIT 阶段让它看到"还有哪几项没做"——这是防反复改无关内容的锚点。
+            "checklist": (self._checklist_progress()
+                          if self.phase in ("EDIT_PLAN", "EDIT") else None),
             "failure": next((f for f in reversed(self.failures) if not f.get("resolved")), None),
             "board": {
                 "n_steps": len(self.steps),
@@ -510,6 +542,9 @@ class Loop:
             self.status = "INSUFFICIENT_EVIDENCE"
             self.insufficient = {"reason": why, "missing": act.get("missing", [])}
             return
+        if name == "plan_edit":
+            self._handle_plan_edit(act)
+            return
         if name is None:
             self.L.append("policy_noop", {"act": _short(act, 400)})
             return
@@ -527,6 +562,88 @@ class Loop:
             return
         self._call(name, act.get("args") or {}, why, act.get("expect_n"),
                    act.get("label"), act.get("alias"))
+
+    def _handle_plan_edit(self, act):
+        """EDIT_PLAN 阶段：agent 用 plan_edit 提交 checklist。
+
+        checklist 是 agent 把主任务卡按 EDIT 工具白名单分解出来的执行计划，
+        每项 {tool, sids, target}，最后一项必须是 emit。编排层只做搬移和最小校验：
+          - 每项必须有 tool，且 tool 在 EDIT 白名单里（emit 必须在最后一项）；
+          - 不校验 target 对不对 —— 那是 agent 的规划能力，编排层不替它思考；
+          - 重复 plan_edit 会覆盖前一份（agent 改主意时允许重规划）。
+        """
+        items = act.get("checklist") or act.get("args", {}).get("checklist") or []
+        if not isinstance(items, list) or not items:
+            self.steps.append({"id": "s%d" % self.turn, "phase": self.phase,
+                               "tool": "plan_edit", "error": "checklist 为空",
+                               "hint": "checklist 必须是非空数组，每项 {tool, sids, target}，"
+                                       "最后一项 tool 必须是 emit。"})
+            self.L.append("plan_edit_rejected", {"why": "checklist 为空", "turn": self.turn})
+            return
+        allowed = PHASE_TOOLS.get("EDIT", set())
+        # 校验：每项 tool 必须在 EDIT 白名单里；最后一项必须是 emit
+        for i, it in enumerate(items):
+            tool = (it or {}).get("tool")
+            if tool not in allowed:
+                self.steps.append({"id": "s%d" % self.turn, "phase": self.phase,
+                                   "tool": "plan_edit",
+                                   "error": "第 %d 项 tool=%r 不在 EDIT 白名单" % (i, tool),
+                                   "hint": "工具必须是：%s" % ", ".join(sorted(allowed))})
+                self.L.append("plan_edit_rejected",
+                              {"why": "第 %d 项 tool=%r 非法" % (i, tool), "turn": self.turn})
+                return
+        last_tool = (items[-1] or {}).get("tool")
+        if last_tool != "emit":
+            self.steps.append({"id": "s%d" % self.turn, "phase": self.phase,
+                               "tool": "plan_edit",
+                               "error": "最后一项 tool=%r，必须是 emit" % last_tool,
+                               "hint": "改完几何必须 emit 落盘，否则 advance_phase 会被门控拒。"
+                                       "把 emit 放在 checklist 最后一项。"})
+            self.L.append("plan_edit_rejected",
+                          {"why": "最后一项不是 emit", "turn": self.turn})
+            return
+        # 规范化：每项补 done=False，sids 统一成 list
+        norm = []
+        for it in items:
+            sids = it.get("sids") or []
+            if isinstance(sids, str):
+                sids = [sids]
+            norm.append({"tool": it["tool"], "sids": sids,
+                         "target": it.get("target") or "", "done": False})
+        self.edit_checklist = norm
+        self._edit_done = set()
+        self.L.append("plan_edit", {"n_items": len(norm), "checklist": norm,
+                                    "turn": self.turn})
+
+    def _checklist_progress(self):
+        """EDIT_PLAN/EDIT 阶段渲染 checklist 进度给 agent 看。
+
+        EDIT_PLAN 还没规划时返回 None；规划了显示清单（全未勾）。
+        EDIT 阶段显示清单 + 已完成标记，agent 一眼能看到下一个该做什么。
+        """
+        if not self.edit_checklist:
+            return None
+        lines = []
+        for i, it in enumerate(self.edit_checklist):
+            mark = "✓" if i in self._edit_done else "☐"
+            sids = ",".join(it["sids"]) if it["sids"] else "—"
+            lines.append("  %s [%d] %s(sids=%s): %s"
+                         % (mark, i, it["tool"], sids, it["target"]))
+        done_n = len(self._edit_done)
+        total = len(self.edit_checklist)
+        lines.append("  进度：完成 %d / %d。下一个未完成项见 ☐ 标记。" % (done_n, total))
+        return "\n".join(lines)
+
+    def _next_checklist_hint(self):
+        """给一句「下一个未完成项是啥」的指引，拼进空转提示里。都做完了就提醒 emit。"""
+        for i, it in enumerate(self.edit_checklist):
+            if i not in self._edit_done:
+                sids = ",".join(it["sids"]) or "—"
+                return "下一个未完成项 [%d]：%s(sids=%s) — %s" % (
+                    i, it["tool"], sids, it["target"])
+        if self.edit_checklist:
+            return "checklist 已全部完成，最后一项是 emit——现在就该 emit 落盘。"
+        return "尚未规划 checklist（plan_edit），先规划再改。"
 
     def _call(self, name, args, why, expect_n=None, label=None, alias=None):
         # 步骤标识优先用 agent 给的语义标签（load / pf / win ...）：
@@ -859,6 +976,50 @@ class Loop:
             # 「这个数以前出现过」的前提同样失效：改完之后 3.2 m 还是 3.2 m，但指的是新的东西。
             self._seen_nums.clear()
             self._meas_fresh.clear()
+            # EDIT 内的空转检测 + checklist 打勾。
+            # 空转定义：同一 (tool, sids) 签名在 EDIT 里出现 ≥2 次。左挪 1mm 再右挪 1mm
+            # 对最终成果没影响，但反复做就是死循环——编排层打断并提示回 checklist。
+            # checklist 打勾：编辑动作匹配到某一项（tool 相同 + sids 有交集）就标记完成。
+            if self.phase == "EDIT":
+                sids_now = set(_result_sids(out) if isinstance(out, dict) else [])
+                # 从 args 里再兜底取 sids（有些工具 out 不含 sid 列表）
+                a_ = args if isinstance(args, dict) else {}
+                for k in ("sid", "sids"):
+                    v = a_.get(k)
+                    if isinstance(v, str):
+                        sids_now.add(v)
+                    elif isinstance(v, (list, tuple)):
+                        sids_now.update(str(x) for x in v)
+                sig = (name, frozenset(sids_now))
+                self._edit_sigs[sig] = self._edit_sigs.get(sig, 0) + 1
+                # checklist 打勾（只勾第一项匹配的未完成项）
+                matched = -1
+                for i, it in enumerate(self.edit_checklist):
+                    if i in self._edit_done:
+                        continue
+                    if it["tool"] == name and (set(it["sids"]) & sids_now
+                                               or not it["sids"] or not sids_now):
+                        self._edit_done.add(i)
+                        matched = i
+                        break
+                if matched >= 0:
+                    self.L.append("checklist_done", {"index": matched,
+                                                     "tool": name, "step": sid})
+                # 空转提示：同一签名 ≥2 次，说明它在反复做同一处改动
+                if self._edit_sigs[sig] >= 2:
+                    nxt = self._next_checklist_hint()
+                    msg = ("你已经在 %s(sids=%s) 上改了 %d 次——这就是「左挪 1mm 右挪 1mm」的空转，"
+                           "对最终成果没有影响。回到 checklist 的下一个未完成项，"
+                           "或者如果都做完了就 emit 落盘。%s"
+                           % (name, ",".join(sorted(sids_now)) or "?",
+                              self._edit_sigs[sig], nxt))
+                    if isinstance(obs, str) and obs.rstrip().endswith("}"):
+                        step["obs"] = obs.rstrip()[:-1] + ',"_edit_loop":%s}' % json.dumps(
+                            msg, ensure_ascii=False)
+                    step["hint"] = "同一处改动重复 %d 次，判空转" % self._edit_sigs[sig]
+                    self.L.append("edit_loop_warn", {"step": sid, "tool": name,
+                                                     "sids": sorted(sids_now),
+                                                     "count": self._edit_sigs[sig]})
         if name == "emit" and isinstance(out, dict) and out.get("path"):
             self.emitted.add(out["path"])
         if name == "load" and isinstance(out, dict):
@@ -1145,6 +1306,9 @@ class Loop:
             "IDENTIFY": lambda: (self.context()["board"]["n_unique_selections"] >= 1
                                  or self.context()["board"]["n_whole_set"] >= 1),
             "MEASURE": lambda: len(self.measurements) >= 1,
+            # EDIT_PLAN 的推进门控：写层任务必须先 plan_edit 出非空 checklist（最后一项 emit）；
+            # 纯测量任务跳过规划，门控恒过（进 EDIT 后由上面的 read_only pass 占位）。
+            "EDIT_PLAN": lambda: self.read_only or bool(self.edit_checklist),
             # 写层的第一条纪律：改了几何就必须落盘。
             # 「改完只在内存里体检一下就交卷」是这类任务最容易出的事 —— 报告很漂亮，
             # 但没有任何可交付的模型。纯测量任务（read_only）由上面的自动 pass 放行。
@@ -1176,6 +1340,8 @@ class Loop:
                 "IDENTIFY": "要么把题目点名的角色各压到唯一命中（至少 1 个），"
                             "要么用一次 select/pick 把全集确认下来（条数 = 实体总数）",
                 "MEASURE": "至少完成一次测量（MEASURE 阶段的白名单工具）",
+                "EDIT_PLAN": "先用 plan_edit 把主任务卡分解成 checklist（每项 tool/sids/target，"
+                              "最后一项必须是 emit），再 advance_phase 进 EDIT",
                 "VERIFY": "没有未消解的失败（补齐原失败缺的条目就算消解：条数要到位，"
                           "且原来那几件仍在结果里 —— 换一条路径证明同一件事同样算数）",
                 "EDIT": "改了几何就必须 emit 落盘；纯测量任务由编排层自动 pass 占位",
