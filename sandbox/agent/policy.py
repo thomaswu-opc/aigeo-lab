@@ -298,7 +298,11 @@ class LLMPolicy(Policy):
             "",
             "最近观察：\n" + ("\n\n".join(recent) if recent else "（无）"),
             "",
-            "当前阶段：%s（第 %d 轮，剩余 %d 轮）" % (ctx["phase"], ctx["turn"], ctx["budget_left"]),
+            # 剩余轮数：声明预算用完后（容错区）仍给真实数字，避免摆烂；
+            # 两个语义都给：budget_left 是声明剩余，budget_hard_left 是含容错的硬停剩余
+            "当前阶段：%s（第 %d 轮，声明剩余 %d 轮，可继续至第 %d 轮）"
+            % (ctx["phase"], ctx["turn"], ctx["budget_left"],
+               ctx["turn"] + ctx.get("budget_hard_left", ctx["budget_left"])),
             "本阶段目标：" + ctx["goal"],
             "本阶段可用工具：" + ", ".join(ctx["tools"]),
             "已唯一确定的角色：" + json.dumps(ctx["roles"], ensure_ascii=False),

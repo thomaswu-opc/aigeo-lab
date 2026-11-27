@@ -18,6 +18,7 @@
 import copy
 import hashlib
 import json
+import math
 import re
 import time
 
@@ -202,7 +203,7 @@ class AuditError(Exception):
 class Loop:
     def __init__(self, bus, ledger, policy, card_text, card_path, model_path,
                  max_turns=40, wall_budget=180.0, expect_log=None, read_only=False,
-                 on_tick=None):
+                 on_tick=None, grace_turns=None, grace_wall=None):
         self.bus = bus
         # 每轮末尾的回调：只用来出「进行中的画面」（run_agent 里的 live 预览）。
         # 不参与决策、不改场景，异常一律吞掉 —— 渲染失败不该让解题中断。
@@ -227,8 +228,28 @@ class Loop:
         self.card_text = card_text
         self.card_path = card_path
         self.model_path = model_path
-        self.max_turns = max_turns
-        self.wall_budget = wall_budget
+        # ---------------------------------------------------- 预算的两层结构
+        # max_turns / wall_budget  ：**声明预算**——驱动收口提示、阶段推进、策略里的
+        #                            budget_left。agent 在上下文里看到的始终是它。
+        # hard_turns / hard_wall    ：**终止预算**——真正硬停 while 循环的判据。
+        #                            默认 = 声明预算 * 1.5（至少多给 10 轮 / 60 秒），
+        #                            这段超出的就是"容错区"：就差一两轮时不硬停，
+        #                            跑完之后由 _end_status 打 BUDGET_OVERRUN 标记
+        #                            （不降级成 OK，但也不是纯失败），供事后评估减分。
+        # grace_turns / grace_wall  ：外部可显式传入容错轮数/秒数（前端配置用）；
+        #                            不传时按上面默认规则算。
+        self.max_turns   = int(max_turns)
+        self.wall_budget = float(wall_budget)
+        if grace_turns is not None:
+            self.hard_turns = self.max_turns + int(grace_turns)
+        else:
+            self.hard_turns = max(self.max_turns + 10,
+                                  int(math.ceil(self.max_turns * 1.5)))
+        if grace_wall is not None:
+            self.hard_wall = self.wall_budget + float(grace_wall)
+        else:
+            self.hard_wall = max(self.wall_budget + 60.0,
+                                 self.wall_budget * 1.5)
         self.expect = dict(expect_log or {})     # step 序号 → 期望候选数（由策略声明）
 
         self.phase = "SURVEY"
@@ -280,12 +301,17 @@ class Loop:
         self.L.append("agent_start", {
             "card": self.card_path, "model": self.model_path,
             "phases": PHASES, "gates": {k: sorted(v) for k, v in PHASE_TOOLS.items()},
-            "max_turns": self.max_turns, "policy": getattr(self.policy, "kind", "?"),
+            "max_turns": self.max_turns, "hard_turns": self.hard_turns,
+            "wall_budget": self.wall_budget, "hard_wall": self.hard_wall,
+            "policy": getattr(self.policy, "kind", "?"),
             "read_only": self.read_only,
             "tools_visible": [t["function"]["name"] for t in sch.full_specs()],
         })
-        while self.turn < self.max_turns and self.status == "RUNNING":
-            if time.time() - self.t0 > self.wall_budget:
+        # 终止判据用 hard_turns / hard_wall（含容错区），声明值 max_turns / wall_budget
+        # 仅用于收口提示与策略里的 budget_left —— 后者让 agent 以为"还剩 15% 轮"就交卷，
+        # 但硬停要等到 1.5× 之外，这就是"就差一两轮不至于白跑"的容错区。
+        while self.turn < self.hard_turns and self.status == "RUNNING":
+            if time.time() - self.t0 > self.hard_wall:
                 self._finish("TIMEOUT")
                 break
             self._maybe_close()
@@ -415,7 +441,12 @@ class Loop:
             "turn": self.turn,
             "phase": self.phase,
             "goal": PHASE_GOAL[self.phase],
-            "budget_left": self.max_turns - self.turn,
+            # budget_left：声明预算剩余（非负），agent 用它感知「该收口了吗」。
+            # 声明预算耗尽后为 0，不再往下掉成负数（负数会误导它以为已经超时摆烂）。
+            "budget_left": max(0, self.max_turns - self.turn),
+            # budget_hard_left：距硬停还剩多少轮（含容错区），agent 用它知道「还能跑多久」。
+            # 超声明预算后仍是正数 —— 这正是容错区：声明已尽，但没到硬停。
+            "budget_hard_left": self.hard_turns - self.turn,
             "closing": self.closing_note,
             # 复核与报告阶段常驻一张「已量到的数」：交卷时最需要的就是它。
             # 只在这两个阶段给，是因为识别/测量阶段的任务是「找下一个量」，
@@ -1534,21 +1565,37 @@ class Loop:
 
     # ------------------------------------------------------------ 收尾
 
+    def _in_grace(self):
+        """本次运行是否落在了容错区（声明预算 < 实际轮次/时长 ≤ 终止预算）。"""
+        return (self.turn > self.max_turns
+                or (time.time() - self.t0) > self.wall_budget)
+
     def _end_status(self, default):
         """收尾状态按「被什么挡住」定名，而不是笼统的一律 POLICY_EXHAUSTED。
-        评委看状态字就该知道是门控拦了、审计拦了，还是单纯没步数了。"""
+        评委看状态字就该知道是门控拦了、审计拦了，还是单纯没步数了。
+
+        容错区规则：
+          - answer 已交（answer 非 None）→ 永远 OK，容错区超时不算失败；
+          - 落在容错区（声明预算 < 实际 ≤ 终止预算）且没交卷 → BUDGET_OVERRUN
+            （不是纯失败，是"差一点点没做完"，供事后评估减分）；
+          - 其余路径不变。
+        """
         if self.answer is not None:
             return "OK"
         if self.audit_rejects:
             return "AUDIT_FAILED"
         if self.gate_rejects:
             return "GATE_BLOCKED"
+        # 容错区：轮次已超声明预算但仍在终止预算内
+        if self.turn > self.max_turns and default == "BUDGET_EXHAUSTED":
+            return "BUDGET_OVERRUN"
         return default
 
     def _finish(self, status):
         self.status = status
         self.L.append("agent_end", {"status": status, "turn": self.turn,
                                     "phase": self.phase,
+                                    "in_grace": self._in_grace(),
                                     "elapsed_s": round(time.time() - self.t0, 2)})
 
     def report(self):
@@ -1557,6 +1604,11 @@ class Loop:
             "turns": self.turn,
             "phase": self.phase,
             "elapsed_s": round(time.time() - self.t0, 3),
+            # 容错区标记：跑了超出声明预算但在终止预算内。前端/评估脚本用这个字段
+            # 在效能评分里减分（超预算未交卷 → overrun=True, status=BUDGET_OVERRUN）
+            "overrun": self._in_grace(),
+            "declared_turns": self.max_turns,
+            "hard_turns": self.hard_turns,
             "answer": self.answer,
             "steps": self.steps,
             "roles": self.roles,

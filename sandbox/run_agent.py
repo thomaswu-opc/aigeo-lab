@@ -628,8 +628,14 @@ def main():
     ap.add_argument("--fallback", action="store_true")
     ap.add_argument("--tag", default="agent")
     ap.add_argument("--orbits", type=int, default=3)
-    ap.add_argument("--max-turns", type=int, default=40)
-    ap.add_argument("--wall-budget", type=float, default=180.0)
+    ap.add_argument("--max-turns", type=int, default=40,
+                    help="声明预算（轮）：驱动收口提示与策略里的 budget_left")
+    ap.add_argument("--wall-budget", type=float, default=180.0,
+                    help="声明预算（秒）：驱动收口提示")
+    ap.add_argument("--grace-turns", type=int, default=None,
+                    help="容错轮数：终止预算 = 声明预算 + grace（不传则按 1.5×/最低+10 自动算）")
+    ap.add_argument("--grace-wall", type=float, default=None,
+                    help="容错秒数：终止墙钟 = 声明墙钟 + grace（不传则按 1.5×/最低+60 自动算）")
     ap.add_argument("--no-video", action="store_true")
     a = ap.parse_args()
     if not (a.card or a.brief):
@@ -695,6 +701,7 @@ def main():
 
     loop = Loop(bus, ledger, policy, card_text, env["card"], a.model,
                 max_turns=a.max_turns, wall_budget=a.wall_budget,
+                grace_turns=a.grace_turns, grace_wall=a.grace_wall,
                 # 交付类型来自管线对原话的编译：只要求测量的任务不必进写层。
                 # 用 --card 跑既有任务卡时保持原行为（None → False）。
                 read_only=bool(brief and brief.get("kind") == "measure"),

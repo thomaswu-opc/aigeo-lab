@@ -176,5 +176,64 @@ check("测量阶段不贴板", loop8.context()["measured"], None)
 loop8.phase = "VERIFY"
 check("复核阶段贴板", "0.6965" in (loop8.context()["measured"] or ""), True)
 
+# ---------------------------------------------------------------- 6. 预算分层 + 容错区
+# 声明预算（max_turns）驱动收口提示；终止预算（hard_turns）驱动 while 硬停。
+# 容错区 = [max_turns, hard_turns)：超声明但未到硬停，不直接停，打 overrun 标记供评估减分。
+
+def mk_loop(max_turns=40, wall=180.0, grace=None, gwall=None, **kw):
+    b = Bus(ledger())
+    return Loop(b, ledger(), FakePolicy(), "card", "card.md", "m.ifc",
+                max_turns=max_turns, wall_budget=wall,
+                grace_turns=grace, grace_wall=gwall, **kw)
+
+# 6a. 默认容错：声明 40 → 硬停 1.5×（至少 +10）
+lp = mk_loop(40, 180.0)
+check("默认硬停 = max(1.5×, +10)", lp.hard_turns, max(int(40 * 1.5), 40 + 10))
+check("默认硬停墙钟 = max(1.5×, +60)", lp.hard_wall, max(180.0 * 1.5, 180.0 + 60.0))
+
+# 6b. 显式容错：声明 40 + grace 8 → 硬停 48
+lp2 = mk_loop(40, 180.0, grace=8, gwall=30.0)
+check("显式容错轮数", lp2.hard_turns, 48)
+check("显式容错墙钟", lp2.hard_wall, 210.0)
+
+# 6c. 收口提示仍用声明预算（左=声明-当前），不随硬停漂移
+lp3 = mk_loop(100, 600.0)
+lp3.turn = 92
+lp3.measurements = ["w1"]
+lp3._maybe_close()
+check("收口窗口相对声明预算", "只剩 8 轮" in (lp3.closing_note or ""), True)
+
+# 6d. 主循环硬停判据：turn 到达 hard_turns 边界才算 BUDGET_EXHAUSTED
+#     （用 _in_grace 判断是否落在容错区）
+lp4 = mk_loop(40, 180.0, grace=8)
+lp4.turn = 45   # 已超声明 40，未到硬停 48
+check("turn=45 落在容错区", lp4._in_grace(), True)
+check("容错区未交卷 → BUDGET_OVERRUN",
+      lp4._end_status("BUDGET_EXHAUSTED"), "BUDGET_OVERRUN")
+
+lp4.turn = 48   # 到达硬停边界
+check("turn=48 仍算容错区（含边界）", lp4._in_grace(), True)
+check("边界未交卷 → BUDGET_OVERRUN",
+      lp4._end_status("BUDGET_EXHAUSTED"), "BUDGET_OVERRUN")
+
+# 6e. 已交卷即使超预算也改判 OK（不因超时判失败）
+lp5 = mk_loop(40, 180.0, grace=8)
+lp5.turn = 46
+lp5.answer = {"values": {"x": 1}}
+check("超预算但已交卷 → OK", lp5._end_status("BUDGET_EXHAUSTED"), "OK")
+check("report 里 overrun 标记为真", lp5.report()["overrun"], True)
+
+# 6f. 未超声明预算 → 不在容错区，正常 BUDGET_EXHAUSTED
+lp6 = mk_loop(40, 180.0, grace=8)
+lp6.turn = 40   # 恰好等于声明（未超）
+check("turn=40 未超声明", lp6._in_grace(), False)
+check("未超声明耗尽 → BUDGET_EXHAUSTED",
+      lp6._end_status("BUDGET_EXHAUSTED"), "BUDGET_EXHAUSTED")
+
+# 6g. report 暴露预算字段
+rp = lp2.report()
+check("report 带 declared_turns", rp["declared_turns"], 40)
+check("report 带 hard_turns", rp["hard_turns"], 48)
+
 print("\n%d 通过 / %d 失败" % (ok, fail))
 sys.exit(1 if fail else 0)
