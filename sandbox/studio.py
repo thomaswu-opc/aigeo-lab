@@ -150,13 +150,17 @@ def models():
 
 # ------------------------------------------------------------------ 出题 / 跑
 
-def start_solve(text, model_rel, title=None, max_turns=70, wall=900):
+def start_solve(text, model_rel, title=None, max_turns=70, wall=900,
+                grace_turns=None, grace_wall=None):
     """一段原话 + 一个模型文件 -> 起一轮 agent。
 
     页面上能填的只有这两样。把「这段话要什么」读出来是这条管线自己的活：
     `agent.brief.compile_brief` 把原话编成本轮的任务规格（交付类型、要交的量、题面点名的实体、
     原话自带的约束），再由它渲染成注入 LLM 的说明。规格会落在 runs/_cards/<tag>.brief.json，
     跟着这一轮一起存档 —— 它是中间产物，不是输入格式。
+
+    预算分两层：max_turns/wall 是**声明预算**（驱动收口提示），grace_turns/grace_wall 是
+    **容错额度**（终止预算 = 声明 + 容错，真正硬停）。不传容错则 run_agent 按 1.5×/最低+10 自动算。
     """
     text = (text or "").strip()
     if len(text) < 8:
@@ -203,6 +207,10 @@ def start_solve(text, model_rel, title=None, max_turns=70, wall=900):
            "--model", model_rel, "--tag", tag, "--orbits", "1", "--no-video",
            "--max-turns", str(int(max_turns)), "--wall-budget", str(float(wall)),
            "--llm", llm]
+    if grace_turns is not None:
+        cmd += ["--grace-turns", str(int(grace_turns))]
+    if grace_wall is not None:
+        cmd += ["--grace-wall", str(float(grace_wall))]
     note = ("在线 LLM：%s（temperature=0）· 任务规格由原话编译：%d 个量 / %d 个实体"
             % (llm, len(brief["quantities"]), len(brief["subjects"])))
 
@@ -451,10 +459,14 @@ class H(BaseHTTPRequestHandler):
         try:
             if u.path == "/api/solve":
                 b = self._json_body()
+                gt = b.get("grace_turns")
+                gw = b.get("grace_wall")
                 r = start_solve(b.get("text"),
                                 b.get("model") or "../pkg/AI-Geometry-Models/IFC/AI_Geometry_Input.ifc",
                                 b.get("title"),
-                                int(b.get("max_turns") or 70), float(b.get("wall") or 900))
+                                int(b.get("max_turns") or 70), float(b.get("wall") or 900),
+                                int(gt) if gt not in (None, "") else None,
+                                float(gw) if gw not in (None, "") else None)
                 return self._send(200, r)
             if u.path == "/api/upload":
                 n = int(self.headers.get("Content-Length") or 0)

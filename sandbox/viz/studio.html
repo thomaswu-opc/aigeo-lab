@@ -163,6 +163,12 @@ table.task td{padding:9px 12px;border-bottom:1px solid var(--line2);font-size:12
      padding:9px 11px;font:12.5px/1.6 var(--mono);color:var(--ink);background:#fcfdfe;outline:none}
   #q:focus{border-color:#9dc2d8;box-shadow:0 0 0 3px rgba(47,127,181,.10)}
   .crow{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
+  /* 预算配置行：比 .crow 更轻，用小标签 + 紧凑数字框，视觉上区分于「模型/上传」那行 */
+  .crow.budget{gap:10px;padding:7px 10px;border:1px dashed #dbe3e9;border-radius:8px;background:#fbfcfd}
+  .crow.budget label{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;color:var(--ink2);white-space:nowrap}
+  .crow.budget input[type=number]{width:56px;font-size:12px;border:1px solid #d8dfe5;border-radius:6px;padding:4px 5px;color:var(--ink2);background:#fff}
+  .crow.budget input[type=number]:focus{border-color:#9dc2d8;outline:none}
+  .crow.budget .hint{font-size:11px;color:var(--dim);margin-left:auto}
   select,.filelab{font-size:12px;border:1px solid #d8dfe5;border-radius:7px;padding:6px 8px;background:#fff;color:var(--ink2)}
   .filelab{cursor:pointer}
   .seg{display:flex;border:1px solid #d8dfe5;border-radius:7px;overflow:hidden}
@@ -654,6 +660,13 @@ async function renderComposer(){
       <span class="spacer"></span>
       <button class="btn go" id="go" ${LIVE?"":"data-off=1"}>开始解题</button>
     </div>
+    <div class="crow budget" title="预算分两层：声明预算驱动收口提示（剩 15% 时催交卷）；终止预算才是硬停，声明预算之上额外给容错额度，让「差一两轮」的任务跑完（事后评估会记 overrun 减分）">
+      <label>声明预算 <input type="number" id="mturns" min="10" max="500" step="5" value="70" title="声明预算：轮数，驱动收口提示"> 轮</label>
+      <label>墙钟 <input type="number" id="mwall" min="60" max="7200" step="60" value="900" title="声明墙钟：秒，驱动收口提示"> s</label>
+      <label>容错轮 <input type="number" id="gturns" min="0" max="500" step="5" value="30" title="容错额度：轮，终止预算=声明+容错（留空则按 1.5×/最低+10 自动算）"> 轮</label>
+      <label>容错秒 <input type="number" id="gwall" min="0" max="7200" step="60" value="300" title="容错额度：秒，终止墙钟=声明+容错（留空则按 1.5×/最低+60 自动算）"> s</label>
+      <span class="hint" id="budgetHint">终止 = 声明 + 容错</span>
+    </div>
     <div class="note${LIVE?"":" warn"}" id="cnote"><i></i><span>${LIVE
       ? "输入只有两样：一段原话、一个模型文件。没有内置题目，也不需要填任何字段——agent 要交什么、按什么口径量，由管线从句子里读出来（跑起来后第一步可展开看它读成了什么）。"
       : "这一份是导出的单文件快照，没有后端，所以点「开始解题」不会真跑（输入框可以编辑，但只用于本地起草）。要现场出题：在 sandbox 目录执行 python studio.py，再打开 " + LIVE_URL + "。"}</span></div>`;
@@ -678,6 +691,23 @@ async function renderComposer(){
   const q = $("q");
   if(q && LIVE && !raw) setTimeout(()=>q.focus(), 60);
   if(q) q.onkeydown = e => { if((e.metaKey||e.ctrlKey) && e.key==="Enter"){ e.preventDefault(); startLive(); } };
+  // 预算配置：输入变化即更新「终止 = 声明 + 容错」的实时读数，让人一眼看到真实硬停位。
+  // 容错留空时按后端默认（1.5× 与最低 +10/+60 取大）给出预估，而不是显示空。
+  const bh = $("budgetHint");
+  const updBudget = () => {
+    if(!bh) return;
+    const mt = parseInt($("mturns").value, 10) || 70;
+    const mw = parseFloat($("mwall").value) || 900;
+    const gtRaw = ($("gturns").value||"").trim();
+    const gwRaw = ($("gwall").value||"").trim();
+    const ht = gtRaw==="" ? Math.max(mt+10, Math.ceil(mt*1.5)) : mt + (parseInt(gtRaw,10)||0);
+    const hw = gwRaw==="" ? Math.max(mw+60, mw*1.5) : mw + (parseFloat(gwRaw)||0);
+    bh.textContent = `终止预算 = ${ht} 轮 / ${Math.round(hw)} s（声明 ${mt}/${Math.round(mw)} + 容错 ${ht-mt}/${Math.round(hw-mw)}）`;
+  };
+  for(const id of ["mturns","mwall","gturns","gwall"]){
+    const el = $(id); if(el) el.oninput = updBudget;
+  }
+  updBudget();
 }
 function setNote(txt, cls){
   const n = $("cnote"); if(!n) return;
@@ -695,10 +725,18 @@ async function startLive(){
   if(text.length < 12){ setNote("题目太短了：至少给一句完整的要求。","warn"); $("q").focus(); return; }
   const model = $("model").value || null;
   if(!model){ setNote("先选一个模型（或上传一个）。","warn"); return; }
+  // 预算配置：声明预算 + 容错额度。容错留空（""）则后端按 1.5×/最低 自动算。
+  const mt = parseInt($("mturns").value, 10) || 70;
+  const mw = parseFloat($("mwall").value) || 900;
+  const gtRaw = ($("gturns").value||"").trim();
+  const gwRaw = ($("gwall").value||"").trim();
+  const payload = {text, model, max_turns:mt, wall:mw};
+  if(gtRaw !== "") payload.grace_turns = parseInt(gtRaw, 10);
+  if(gwRaw !== "") payload.grace_wall = parseFloat(gwRaw);
   const btn = $("go"); btn.disabled = true; btn.textContent = "启动中…";
   try{
     const r = await fetch("/api/solve", {method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({text, model, max_turns:70, wall:900})});
+      body: JSON.stringify(payload)});
     const j = await r.json();
     if(j.error) throw new Error(j.error);
     S.liveTag = j.tag; S.since = 0; S.events = []; S.run = null; S.archive=false;
