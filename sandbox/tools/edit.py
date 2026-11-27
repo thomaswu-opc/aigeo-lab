@@ -763,7 +763,16 @@ def t_reopen_round(bus, sid, center, area, segments=48):
     k = int(np.argmin(d))
     rest = [i for i in range(3) if i != k]
     ku, kv = rest
-    c = np.asarray(center, float).reshape(3)
+    # center：兼容 [x,y,z] 和 [x,z]（BIM 常见用法——agent 在 x-z 截面量得洞口中心）。
+    # 2D 时缺的那一维（板法向 k）取板中心，这样 agent 不必自己算板法向。
+    c = np.asarray(center, float)
+    if c.size == 2:
+        c3 = np.zeros(3)
+        c3[0] = c[0]; c3[2] = c[1]
+        c3[1] = (lo[1] + hi[1]) / 2       # 缺 y（板法向常见是 y）
+        c = c3
+    else:
+        c = c.reshape(3)
     half_w = float(d[ku]) / 2.0
     half_h = float(d[kv]) / 2.0
     cu = float(c[ku] - (lo[ku] + hi[ku]) / 2.0)     # 圆心相对板中心的偏移
