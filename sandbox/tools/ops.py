@@ -106,8 +106,14 @@ def t_select(bus, items, where=None, probe=False, fields=None):
     哪些条件单独看一个都命中不了（阈值写歪了，或者参照系用错了）。
     """
     resolved = []
+    no_sid = 0
     for it in items:
-        sid = it["sid"] if isinstance(it, dict) else it
+        # dict 里没有 sid 时不能直接 it["sid"]：实测 T02 有一步把这个工具的返回值
+        # （{"items":[...], "n":...}）整个塞回 items，KeyError 让整步作废。
+        sid = (it.get("sid") if isinstance(it, dict) else it)
+        if not sid:
+            no_sid += 1
+            continue
         S = _get(bus, sid)
         d = _desc(bus, S)
         if isinstance(it, dict):
@@ -124,6 +130,12 @@ def t_select(bus, items, where=None, probe=False, fields=None):
         want = {str(f) for f in fields} | {"sid"}
         keep = [{k: d[k] for k in d if k in want} for d in keep]
     out = {"items": keep, "n": len(keep), "where": where}
+    if no_sid:
+        # 不静默丢：丢了几件要让它看见，否则它会以为「筛出来就这么少」。
+        out["skipped_no_sid"] = no_sid
+        out["note"] = ("有 %d 个输入元素没有 sid 字段（多半是把某个工具的返回值整个塞进"
+                       "items 了），已跳过；items 应该传 sid 字符串列表或带 sid 的指纹 dict"
+                       % no_sid)
     if fields:
         out["fields"] = list(fields)
     if probe:

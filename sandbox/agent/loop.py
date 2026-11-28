@@ -1014,7 +1014,18 @@ class Loop:
                     "profile", "pockets", "regid2d",
                     # angle / openings 也是「产出一个可复核的量」：一个夹角、一组洞口矩形。
                     # 漏登记的直接后果是 MEASURE 门控永远判「还没量过」，模型交不了卷。
-                    "angle", "openings", "assembly"):
+                    "angle", "openings", "assembly",
+                    # 球拟合 / 球-区域关系 / 接触面积 / 投影面积 / 二分求高度：同样是
+                    # 「产出一个可复核的量」。漏登记实测于 T02：fit_sphere 明明返回了
+                    # radius=1.0、sphere_region 返回 signed_gap=0.25 / inside_volume=4.19，
+                    # 但 draft board 只列 assembly 的宽高，模型据此在 unknowns 里写
+                    # 「fit_sphere 与 sphere_region 多次调用均未返回数值」，交出全 null
+                    # 答案还被判 OK —— 因为第五道审计也是看 _has_numbers()，而它只认
+                    # measurements，于是「有数没整理」这条根本没被触发。
+                    # calc 不在此列：它是纯算术，登记了会被用来反复刷「新数字」，
+                    # 把空转检测（_spin）冲掉。
+                    "fit_sphere", "sphere_region", "contact_area",
+                    "proj_area", "solve_section_height"):
             # 凡是「产出一个可复核的量」的工具都算测量。早先只认 distance/rank/section，
             # 于是编排型任务（占地、距门、体检）全都不算数，MEASURE 阶段永远推不动。
             self.measurements.append(sid)
@@ -1490,6 +1501,13 @@ class Loop:
             target = self._recover_from or "IDENTIFY"
         else:
             target = PHASES[min(i + 1, len(PHASES) - 1)]
+        # 纯测量任务没有写层可规划，跳过 EDIT_PLAN 直接进 EDIT（编排层在那里写 pass 占位）。
+        # 只把 EDIT_PLAN 的门控设为恒过是不够的：模型看到阶段目标是「规划怎么改几何」，
+        # 但自己根本没有要改的东西，于是既不 plan_edit 也不 advance，卡死在这一阶段 ——
+        # 实测 T02（读层）53 轮停在 EDIT_PLAN，最后 declare_insufficient。
+        if self.read_only and target == "EDIT_PLAN":
+            target = "EDIT"
+            why = (why or "") + "（纯测量任务跳过 EDIT_PLAN）"
         self.L.append("phase", {"from": self.phase, "to": target, "why": why})
         self.phase = target
         # 进 EDIT 时抓一份 emit 前的几何快照，作为 DIFF 阶段 emit 后对比的 before 基准。

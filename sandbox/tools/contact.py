@@ -104,6 +104,9 @@ def _sphere_box_volume(c, r, lo, hi):
       "  —— signed_gap 是**球面**到区域边界的距离：0 相切、正有间隙、负凸出",
       unit="m / m³")
 def t_sphere_region(bus, center, radius, box):
+    # 全项目只有这一个工具把这个参数叫 box，其余都叫 sid：模型按习惯写 {"sid": ...}
+    # 会 TypeError 整步作废（实测 T02）。别名由 Bus.call 的 _ARG_ALIAS 统一接住 ——
+    # 在这里加 sid=None 默认值会把 box 从 required 里摘掉，模型干脆两个都不传。
     S = _solid_of(bus, box)
     P = np.asarray(S.P, float)
     lo, hi = P.min(0), P.max(0)

@@ -93,6 +93,12 @@ def schema():
 
 
 class Bus:
+    # 工具名 → {模型可能写错的参数名: 真实参数名}。只收「语义相同、写法不同」的别名，
+    # 不做类型转换（那是 _coerce 的活）。
+    _ARG_ALIAS = {
+        "sphere_region": {"sid": "box"},
+    }
+
     def __init__(self, ledger, scene=None):
         self.ledger = ledger
         self.scene = scene or []
@@ -212,6 +218,25 @@ class Bus:
                     raise KeyError(f"{ref} 在 {seg} 处无法下钻：{type(cur)}")
         return cur
 
+    def _alias(self, name, args, step_id):
+        """参数别名：把模型按习惯写错的参数名映射到工具真实签名。
+
+        目前只有一处：`sphere_region` 的区域参数叫 box，而全项目其余工具都叫 sid，
+        模型写 {"sid": ...} 会 TypeError 让整步作废（实测 T02 五个位置里坏了一次）。
+        在签名里加 `sid=None` 的代价是把 box 从 required 里摘掉（模型于是两个都不传），
+        所以改在这里做，并记一笔账 —— 与 _coerce 同一个原则：认得出就接住，不偷偷改。
+        """
+        m = self._ARG_ALIAS.get(name)
+        if not m or not isinstance(args, dict):
+            return args
+        out = dict(args)
+        for src, dst in m.items():
+            if src in out and dst not in out:
+                out[dst] = out.pop(src)
+                self.ledger.append("arg_alias", {"step": step_id, "tool": name,
+                                                 "from": src, "to": dst})
+        return out
+
     def _coerce(self, name, args, step_id):
         """把「本该是数组/对象、却被写成 JSON 字符串」的参数还原。
 
@@ -238,6 +263,7 @@ class Bus:
     def call(self, name, args, step_id=""):
         if name not in TOOLS:
             raise KeyError(f"未注册的工具 {name}；可用：{sorted(TOOLS)}")
+        args = self._alias(name, args, step_id)
         args = self._coerce(name, args, step_id)
         t0 = time.perf_counter()
         try:
