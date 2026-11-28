@@ -415,11 +415,29 @@ def pt_in_poly(p, Q):
     return inside
 
 
+def ring_inside(q, q2, n_probe=12):
+    """环 q 是否落在环 q2 内部：用 q 上的采样顶点做点在多边形测试，过半在内即判包含。
+
+    不用环的**质心**判：薄壁/同心环截面的质心恰好落在孔洞里（外环质心 = 圆心 =
+    孔中心），于是外环自己被判成内环 —— 实测 C006 后墙 axis=1 的截面因此返回
+    `value=-21.16, n_inner=2, gross=0`（两个环互相包含对方的质心，都算 inner）。
+    顶点判定没有这个退化：外环的顶点在孔外，内环的顶点在孔内，判定与几何一致。
+    """
+    m = len(q)
+    if m == 0 or len(q2) < 3:
+        return False
+    idx = list(range(m)) if m <= n_probe else \
+        np.linspace(0, m - 1, n_probe).astype(int).tolist()
+    inside = sum(1 for i in idx if pt_in_poly(q[i], q2))
+    return inside * 2 > len(idx)
+
+
 def section_rings(S, axis=2, height=0.0, min_area=1e-9):
     """截面环，带「是否内环」标记。返回 (rings, dangling, probe_height)。
 
     内环（孔洞）靠**嵌套层数**判，不靠环绕方向：环绕方向取决于三角形朝向，
-    在同一个实体里外环和内环之间没有稳定关系。
+    在同一个实体里外环和内环之间没有稳定关系。嵌套判定用环上顶点（`ring_inside`），
+    不能用质心 —— 同心环的质心会互相落到对方内部，把外环也判成内环。
     """
     bi, ci = [i for i in (0, 1, 2) if i != axis]
     segs, h = section_segs(S, axis, height)
@@ -431,8 +449,7 @@ def section_rings(S, axis=2, height=0.0, min_area=1e-9):
     keep = [(q, a) for q, a in keep if a >= min_area]
     out = []
     for i, (q, a) in enumerate(keep):
-        c = poly_centroid_2d(q)
-        depth = sum(1 for j, (q2, _) in enumerate(keep) if j != i and pt_in_poly(c, q2))
+        depth = sum(1 for j, (q2, _) in enumerate(keep) if j != i and ring_inside(q, q2))
         out.append({"polygon": q, "area": a, "inner": depth % 2 == 1, "depth": depth})
     return out, dangling, h
 

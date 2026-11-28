@@ -347,7 +347,17 @@ CASES = [
 # 纯识别/只读任务：任务卡里明确「不得改变形状或位置」，跑时加 --read-only 跳过写层。
 # 不加会把它当写层跑，agent 进 EDIT 反复想 advance 但无 emit 可交 → gate_rej 拉满、TIMEOUT
 # （实测 T09 bench 跑出 50 次 advance_rejected、140 轮耗尽）。
-READ_ONLY_CASES = {"T09", "CASE_C"}
+#
+# 曾经只登记了 T09/CASE_C，漏掉另外 5 个读层用例：实测 T01_3 emit=3、T02 emit=2、
+# T03 emit=3、T04 emit=2，phase 流都有 EDIT_PLAN→EDIT→DIFF —— 读层任务被写层门控
+# 逼着"规划改动 + 落盘"，T04 的卡还明写「只检查，不移动、不修改任何几何」。
+# 下面用 CASES 的说明列做子集断言，加新读层题忘了登记会在 bench 启动时直接报错。
+READ_ONLY_CASES = {"T01_1", "T01_3", "T02", "T03", "T04", "T09", "CASE_C"}
+_READ_LAYER_IN_CASES = {cid for cid, _n, _card, _m, _chk, note in CASES
+                        if str(note).startswith("读层")}
+assert _READ_LAYER_IN_CASES <= READ_ONLY_CASES, (
+    "CASES 里标了「读层」但没进 READ_ONLY_CASES：%s（会被当写层跑）"
+    % sorted(_READ_LAYER_IN_CASES - READ_ONLY_CASES))
 
 # 写层任务跑不过去常常是预算不够，不是能力不行：T06 上轮 120+60 跑通过、默认 100 挂。
 # 给写层统一放宽到 120 轮 + 60 容错（等于 180 轮硬停），纯识别任务用默认就够。

@@ -139,6 +139,27 @@ def test_scope_labels():
     check("词表", "无重复", len(SCOPE_LABELS), len(set(SCOPE_LABELS)))
 
 
+def test_ring_inside():
+    """截面环的嵌套判定：必须用环上顶点，不能用质心。
+
+    同心环（带洞板的平行截面）里，外环的质心恰好落在孔洞内 —— 改用质心判会让
+    外环也变成 inner，gross=0、net area 为负（实测 C006 后墙 axis=1 返回 -21.16）。
+    下面两条用旧实现必挂：outer 的质心 (0,0) 在 inner 里。
+    """
+    import numpy as np
+
+    from tools.geom import ring_inside
+
+    outer = np.array([[-2.0, -1.5], [2.0, -1.5], [2.0, 1.5], [-2.0, 1.5]])
+    inner = np.array([[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]])
+    check("截面", "内环在外环内", ring_inside(inner, outer), True)
+    check("截面", "外环不在内环内（质心判定会错）", ring_inside(outer, inner), False)
+
+    # 错开的两个环互不包含
+    apart = np.array([[3.0, 3.0], [4.0, 3.0], [4.0, 4.0], [3.0, 4.0]])
+    check("截面", "错开的两环互不包含", ring_inside(apart, outer), False)
+
+
 if __name__ == "__main__":
     test_resolve()
     test_result_sids()
@@ -147,5 +168,6 @@ if __name__ == "__main__":
     test_audit_pointer()
     test_audit_null()
     test_scope_labels()
+    test_ring_inside()
     print("\n%s" % ("全部通过" if FAILED == 0 else "%d 项失败" % FAILED))
     sys.exit(1 if FAILED else 0)
