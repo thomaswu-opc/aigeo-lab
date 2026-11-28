@@ -171,6 +171,33 @@ check("驳回理由里带着实测值", "0.6965" in rej["obs"], True)
 loop8._audit("a2", ans)
 check("第二次不再拒同一条", loop8.audit_rejects, 1)
 
+# 7o. 第五道审计：有数没整理进 values —— claims 为空（一个可核对数值都没写）但量出过数
+#     实测 T02 交 {"probe":"check"}（只有字符串探针、n_claims=0），四道检查全放行、漏网。
+lp_m = Loop(Bus(ledger()), ledger(), FakePolicy(), "card", "card.md", "m.ifc", max_turns=70)
+lp_m.steps = [{"id": "sr1", "phase": "MEASURE", "tool": "sphere_region",
+               "args": '{"items": "C001"}',
+               "obs": '{"relation": "完全在区域内", "radius": 1.0, "sphere_center": [-5.25, 0.0, 1.25]}'}]
+lp_m.measurements = ["sr1"]
+lp_m.results["sr1"] = {"radius": 1.0}
+check("账本有数但答案无数值 → _has_numbers", lp_m._has_numbers(), True)
+# answer 只有探针字符串、没有任何数值（claims 为空）→ 第五道拦下、贴 draft board
+ans_probe = {"values": {"probe": "check"}, "unknowns": [], "evidence": ["sr1"]}
+lp_m._audit("a1", ans_probe)
+check("有数没整理进 values 被拒一次", lp_m.audit_rejects, 1)
+rej = [x for x in lp_m.steps if x.get("id") == "audit"][-1]
+check("驳回理由指出缺可核对数值", "一个可核对的数值都没写" in rej["obs"], True)
+check("驳回理由贴了已量到的数", "radius" in rej["obs"], True)
+# 补上数值后放行
+lp_m._audit("a2", {"values": {"sphere_radius_m": 1.0}, "unknowns": [], "evidence": ["sr1"]})
+check("整理进数值后放行", lp_m.audit_rejects, 1)
+# 纯识别任务（无数值结论、_has_numbers 为空）不触发这条
+lp_i = Loop(Bus(ledger()), ledger(), FakePolicy(), "card", "card.md", "m.ifc", max_turns=70)
+lp_i.steps = [{"id": "sel1", "phase": "IDENTIFY", "tool": "select",
+               "args": '{"items": "C004"}', "obs": '{"n": 1}'}]
+lp_i.results["sel1"] = {"n": 1}   # 证据要存在，否则先撞「证据不存在」而非第五道
+lp_i._audit("a1", {"values": {"door": "C011"}, "unknowns": [], "evidence": ["sel1"]})
+check("纯识别任务无数值不触发第五道", lp_i.audit_rejects, 0)
+
 # 常驻测量板：VERIFY/REPORT 才有
 loop8.phase = "MEASURE"
 check("测量阶段不贴板", loop8.context()["measured"], None)

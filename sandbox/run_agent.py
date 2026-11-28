@@ -637,6 +637,9 @@ def main():
     ap.add_argument("--grace-wall", type=float, default=None,
                     help="容错秒数：终止墙钟 = 声明墙钟 + grace（不传则按 1.5×/最低+60 自动算）")
     ap.add_argument("--no-video", action="store_true")
+    ap.add_argument("--read-only", action="store_true",
+                    help="纯识别/只测量任务：不进入写层（跳过 EDIT_PLAN/EDIT/DIFF），"
+                         "在 MEASURE 后直接 VERIFY。用于任务卡里明确「不得改变形状或位置」的题。")
     a = ap.parse_args()
     if not (a.card or a.brief):
         raise SystemExit("必须给 --card（一段自然语言）或 --brief（管线编译出的规格）之一")
@@ -704,7 +707,9 @@ def main():
                 grace_turns=a.grace_turns, grace_wall=a.grace_wall,
                 # 交付类型来自管线对原话的编译：只要求测量的任务不必进写层。
                 # 用 --card 跑既有任务卡时保持原行为（None → False）。
-                read_only=bool(brief and brief.get("kind") == "measure"),
+                # --read-only 旗标显式指定（任务卡里「不得改变形状或位置」的纯识别题，如 T09）。
+                read_only=bool(a.read_only
+                               or (brief and brief.get("kind") == "measure")),
                 on_tick=tick)
     res = loop.run()
     if hasattr(policy, "usage"):

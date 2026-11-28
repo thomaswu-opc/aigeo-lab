@@ -344,15 +344,36 @@ CASES = [
     ("T10", "火箭对接", "tasks/T10.md", IFC, check_t10, "写层 . 对接"),
 ]
 
+# 纯识别/只读任务：任务卡里明确「不得改变形状或位置」，跑时加 --read-only 跳过写层。
+# 不加会把它当写层跑，agent 进 EDIT 反复想 advance 但无 emit 可交 → gate_rej 拉满、TIMEOUT
+# （实测 T09 bench 跑出 50 次 advance_rejected、140 轮耗尽）。
+READ_ONLY_CASES = {"T09", "CASE_C"}
+
+# 写层任务跑不过去常常是预算不够，不是能力不行：T06 上轮 120+60 跑通过、默认 100 挂。
+# 给写层统一放宽到 120 轮 + 60 容错（等于 180 轮硬停），纯识别任务用默认就够。
+BUDGET_OVERRIDES = {
+    "T05": (120, 60), "T06": (120, 60), "T07": (120, 60),
+    "T08": (120, 60), "T10": (120, 60),
+}
+
+
+def _budget_for(cid):
+    return BUDGET_OVERRIDES.get(cid, (100, None))
+
 
 def run_one(cid, card, model, i, tag=None):
     tag = tag or ("bench_%s_%d" % (cid, i))
     stale = os.path.join(HERE, "runs", tag, "result.json")
     if os.path.exists(stale):
         os.remove(stale)
+    max_turns, grace = _budget_for(cid)
     cmd = [sys.executable, "run_agent.py", "--card", card, "--model", model,
-           "--llm", "auto", "--tag", tag, "--max-turns", "100",
+           "--llm", "auto", "--tag", tag, "--max-turns", str(max_turns),
            "--wall-budget", "420", "--no-video"]
+    if cid in READ_ONLY_CASES:
+        cmd.append("--read-only")
+    if grace is not None:
+        cmd += ["--grace-turns", str(grace), "--grace-wall", "120"]
     subprocess.run(cmd, cwd=HERE, capture_output=True, text=True)
     try:
         return tag, json.load(open(stale, encoding="utf-8"))

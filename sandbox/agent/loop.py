@@ -1836,6 +1836,26 @@ class Loop:
                             "（键名见任务卡的「答案字段名」）；确实量不出来就调 "
                             "declare_insufficient 说明缺什么，那是一个诚实的终态")
 
+        # 第五道：**有数没整理进 values**。前面四道各拦一种「没交」：空 / 全 null /
+        # 只有 note / 键全在值全空。这条拦最隐蔽的一种——values 非空、有字符串结论，
+        # 但**一个可核对的数值都没写进去**（claims 为空），而本次运行明明量出过数。
+        # 实测 T02 交了 {"probe": "check"}：sphere_region 早返回过 radius=1.0、
+        # select 早返回过 box_lo/hi（正方体边长 2.5），可它一个数都没往 values 里搬，
+        # 顺手写了个探针字符串就交卷。审计四道检查全放行（不是空、不全 null、有实质、
+        # 不全是 note），于是「OK 但缺量」。这里按 claims 为空判：量出过数却一个没交，
+        # 贴 draft board 让它把数整理进去。只拒一次（_null_rejects 计数），防死锁——
+        # 纯识别任务（如 T09）的 values 是语义标签、没有数值，不触发这条（claims 为空
+        # 但 _has_numbers 也为空，或者标签算结论不算 claims）。
+        if (isinstance(_vals, dict) and _vals and not claims
+                and self._has_numbers() and self._null_rejects < 1):
+            self._null_rejects += 1
+            board = self._draft_board(limit=8)
+            problems.append(
+                "values 里一个可核对的数值都没写（只有一个字符串/说明）。但本次运行已经量出过数：\n%s\n"
+                "把量到的数整理进 values 的具体键（键名见任务卡的「答案字段名」），每个数要有工具出处；"
+                "确实是语义/定性结论的写标签，确实量不出来的写进 unknowns 并说明缺什么。"
+                % (board or "（无）"))
+
         problems = list(dict.fromkeys(problems))[:8]
 
         if problems:
