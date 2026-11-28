@@ -39,3 +39,6 @@ Thumbs.db
 # ---------------- 早期探索脚本（已被 sandbox/tools 取代，仅留本地） ----------------
 /probe.py
 /brep.py
+
+# 历史运行产物归档：不入库
+sandbox/archive/
