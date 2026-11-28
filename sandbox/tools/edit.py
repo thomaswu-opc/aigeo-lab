@@ -836,6 +836,14 @@ def t_reopen_round(bus, sid, center, area, segments=48):
 
     P = np.array(P, float)
     F = np.array(F, int)
+    # 朝向自检：重建后的壳体可能因构造时的缠绕顺序而整体法向朝内
+    # （signed_volume < 0 → fill 为负）。这会让 agent 的 mesh_health 误判
+    # 「重建失败」——工具明明返回 ok:true，产出却是无效网格（静默失效）。
+    # 统一按「有符号体积为正」翻面，保证壳体外法向朝外。
+    A0, B0, C0 = P[F[:, 0]], P[F[:, 1]], P[F[:, 2]]
+    vol = float(np.einsum("ij,ij->i", A0, np.cross(B0, C0)).sum() / 6.0)
+    if vol < 0:
+        F = F[:, ::-1].copy()
     h0 = mesh_report(S.P, S.F)
     S = _replace(bus, S, P, F, "reopen")
     # 侧面会产生大量共线退化三角形（直边上多点共线），保留会让「退化面」计数失真。
