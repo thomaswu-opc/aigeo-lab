@@ -639,13 +639,18 @@ class Loop:
 
     @staticmethod
     def _plan_sig(norm):
-        """checklist 的签名：tool+sids+target 的稳定序列化，用来判"清单没变"。"""
+        """checklist 的结构签名：只对 tool+sids（顺序敏感的稳定序列化）。
+
+        不含 target —— target 是 agent 用自然语言描述"这一步要干什么"，重述时措辞会抖
+        （实测同一份 13 项清单，两次提交 target 措辞不同，签名比对被误判为"清单变了"）。
+        结构（每项用什么工具、作用于哪些实体）才是"清单没变"的判据；
+        措辞差异不该让 agent 重发一份本可复用的计划。
+        """
         import hashlib
         parts = []
         for it in norm:
-            parts.append("%s|%s|%s" % (it.get("tool"),
-                                       ",".join(str(s) for s in it.get("sids", [])),
-                                       it.get("target") or ""))
+            parts.append("%s|%s" % (it.get("tool"),
+                                    ",".join(str(s) for s in it.get("sids", []))))
         return hashlib.md5("\n".join(parts).encode("utf-8")).hexdigest()
 
     def _checklist_progress(self):
@@ -1055,6 +1060,26 @@ class Loop:
                                                      "count": self._edit_sigs[sig]})
         if name == "emit" and isinstance(out, dict) and out.get("path"):
             self.emitted.add(out["path"])
+            # emit 是 checklist 的最后一项，但 agent 常做完一部分就落盘（实测 T06 做完 8/13
+            # 项就 emit，跳过 5.4 那一步 → 答案 net_width_54_m=null）。软提示，不硬拦：
+            # 清单里有的项可能确实做不了，硬拦会变成死锁；但要让 agent 自己看到"还差哪几项"。
+            if self.edit_checklist and len(self._edit_done) < len(self.edit_checklist):
+                pending = [i for i in range(len(self.edit_checklist))
+                           if i not in self._edit_done]
+                pend_desc = "、".join("%s(sids=%s)" % (self.edit_checklist[i]["tool"],
+                                                     ",".join(self.edit_checklist[i]["sids"]) or "—")
+                                      for i in pending[:4])
+                msg = ("已落盘，但执行清单还差 %d/%d 项没做：%s。"
+                       "如果这些项确实做不了，就在最终答案里写进 unknowns 说明原因；"
+                       "能做的话先把它们做完再重新 emit。"
+                       % (len(pending), len(self.edit_checklist), pend_desc))
+                step["hint"] = ("清单还差 %d 项（%s）" % (len(pending), pend_desc))
+                if isinstance(obs, str) and obs.rstrip().endswith("}"):
+                    step["obs"] = obs.rstrip()[:-1] + ',"_pending":%s}' % json.dumps(
+                        msg, ensure_ascii=False)
+                self.L.append("checklist_pending_at_emit",
+                              {"done": len(self._edit_done), "total": len(self.edit_checklist),
+                               "pending": pending})
         if name == "load" and isinstance(out, dict):
             # load 会把整个场景换掉，「同参数 = 同结果」这个前提随之失效：
             # 同一句 sweep_rotate 在状态1 和状态2 上本来就该给出不同角度。

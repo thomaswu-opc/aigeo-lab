@@ -361,5 +361,46 @@ check("清单变了清除收紧提示", lp_g.plan_note, None)
 check("清单变了正常写 plan_edit 事件",
       len([e for e in lp_g.L if e.get("kind") == "plan_edit"]), 2)
 
+# 7k. emit 时清单未完成 → 软提示（不硬拦，但要 agent 看到"还差哪几项"）
+#     实测 T06：做完 8/13 项就 emit，跳过 5.4 那一步 → 答案 net_width_54_m=null。
+lp_h = mk_editloop()
+lp_h.phase = "EDIT"
+# 3 项清单：两项 edit + 一项 emit。只做第一项 edit，直接 emit → 应提示"还差 2 项"
+lp_h.edit_checklist = [
+    {"tool": "translate", "sids": ["C007"], "target": "右墙随动", "done": False},
+    {"tool": "reopen_round", "sids": ["C006"], "target": "方窗改圆窗", "done": False},
+    {"tool": "emit", "sids": [], "target": "落盘", "done": False},
+]
+_box3 = _Solid("C007", "wall",
+               np.array([[0,0,0],[0.2,0,0],[0.2,4,0],[0,4,0],
+                         [0,0,3],[0.2,0,3],[0.2,4,3],[0,4,3]], float),
+               np.array([[0,1,2],[0,2,3],[4,6,5],[4,7,6],
+                         [0,4,5],[0,5,1],[1,5,6],[1,6,2],
+                         [2,6,7],[2,7,3],[3,7,4],[3,4,0]], int))
+lp_h.bus.scene = [_box3]
+# 做完第一项 edit（translate C007）
+lp_h._dispatch({"tool": "translate",
+                "args": {"sids": ["C007"], "delta": [1.2, 0, 0]}, "why": "右墙随动"})
+check("emit 前只完成 1/3 项", len(lp_h._edit_done), 1)
+# 直接 emit（跳过第 2 项 reopen_round）→ 触发"清单未完成"提示
+_out = lp_h._call("emit", {"path": os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                "runs", "_tmp_7k_emit.gltf")},
+                  "落盘", label="emit_test")
+pend_ev = [e for e in lp_h.L if e.get("kind") == "checklist_pending_at_emit"]
+check("emit 未完成清单记 checklist_pending_at_emit 事件", len(pend_ev), 1)
+check("提示里点明还差 2 项",
+      pend_ev and pend_ev[0]["payload"].get("done") == 1
+      and pend_ev[0]["payload"].get("total") == 3, True)
+# hint 里要写明缺哪一项（reopen_round）
+_h = [s for s in lp_h.steps if s.get("hint", "").startswith("清单还差")]
+check("emit 步骤 hint 指出缺 reopen_round",
+      _h and "reopen_round" in _h[-1]["hint"], True)
+# 清掉临时文件
+try:
+    os.remove(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "runs", "_tmp_7k_emit.gltf"))
+except OSError:
+    pass
+
 print("\n%d 通过 / %d 失败" % (ok, fail))
 sys.exit(1 if fail else 0)
