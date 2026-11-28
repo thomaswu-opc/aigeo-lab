@@ -449,5 +449,28 @@ for p_ in list(lp_j.emitted):
     except OSError:
         pass
 
+# 7n. 方案 2：select 回传旧指纹时给提醒，纯 sid 不误报
+# 真实场景加载 + 对 C004 做一次 stretch_axis，再故意回传带旧 bbox_hi 的 dict
+lp_k = mk_editloop()
+lp_k.phase = "EDIT"
+lp_k._call("load", {"path": "../pkg/AI-Geometry-Models/IFC/AI_Geometry_Input.ifc"},
+           "载入场景")
+lp_k._call("stretch_axis", {"sids": ["C004"], "axis": 0, "anchor_side": "lo", "delta": 1.2},
+           "加宽到 6.0（几何已改）")
+# 回传旧 bbox_hi（原始 4.8 宽），应触发 stale_fingerprint
+# select 不在 EDIT 白名单，_dispatch 会拦；用 _call 直接走到检测块
+lp_k._call("select",
+           {"items": [{"sid": "C004", "bbox_lo": [4.6, -2.0, -0.12],
+                       "bbox_hi": [9.4, 2.0, 0.0], "sx": 4.8}], "where": {}},
+           "复核右边界（旧指纹）")
+stale_ev = [e for e in lp_k.L if e.get("kind") == "stale_fingerprint"]
+check("select 回传旧 bbox_hi 触发 stale_fingerprint", len(stale_ev), 1)
+_h = [s for s in lp_k.steps if s.get("hint", "").startswith("select 回传旧指纹")]
+check("stale 步骤 hint 提示改用纯 sid 重查", len(_h) >= 1, True)
+# 回传纯 sid（不带旧几何字段），不应触发 stale
+lp_k._call("select", {"items": [{"sid": "C004"}], "where": {}},
+           "用纯 sid 重查（正确做法）")
+check("纯 sid 回查不再触发 stale_fingerprint", len(stale_ev), 1)
+
 print("\n%d 通过 / %d 失败" % (ok, fail))
 sys.exit(1 if fail else 0)

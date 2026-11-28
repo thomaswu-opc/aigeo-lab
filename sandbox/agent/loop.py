@@ -946,6 +946,46 @@ class Loop:
             if len(hit) == 1:
                 step["hint"] = ("已唯一命中 %s —— 别再筛同类条件，接着量或直接推进"
                                 % next(iter(hit)))
+        # 方案 2：select 回传旧指纹的提醒。
+        # 实测 T06：agent 把上一轮 select 输出原样回传，几何期间已被 stretch_axis 改过。
+        # select 里 d.update(it) 会用旧字段覆盖场景重算 → select 说 C004 右边界 9.4、
+        # mesh_health 说 12.1，agent 判「状态矛盾」反复横跳直至放弃（一整轮废掉）。
+        # 这里不比 select 输出的 bbox 与场景当前真实 bbox，不一致就提醒它「这是旧指纹」。
+        # 只提醒不拦：可能是参照系坐标（principal_frame 的 items_frame），那是合法用法。
+        if name == "select" and isinstance(out, dict):
+            try:
+                cur = {s.sid: s.bbox() for s in self.bus.scene}
+                stale = []
+                for it in (out.get("items") or []):
+                    if not isinstance(it, dict) or "sid" not in it:
+                        continue
+                    sid = it["sid"]
+                    if sid not in cur:
+                        continue
+                    lo = it.get("bbox_lo")
+                    hi = it.get("bbox_hi")
+                    if lo is None or hi is None:
+                        continue
+                    clo, chi = cur[sid]
+                    # 任一轴偏差 >5mm 且 bbox 跨度不同 → 判定旧指纹
+                    dlo = max(abs(lo[j] - clo[j]) for j in range(3))
+                    dhi = max(abs(hi[j] - chi[j]) for j in range(3))
+                    if max(dlo, dhi) > 0.005:
+                        stale.append((sid, [round(x, 2) for x in lo], [round(x, 2) for x in hi]))
+                if stale:
+                    desc = "；".join("%s bbox %s~%s" % (s, a, b) for s, a, b in stale[:3])
+                    msg = ("你回传的 select 输入里带了旧几何字段，输出与场景当前不符：%s。"
+                           "这多半是上一轮 select 的输出被原样回传、而几何已被 edit 工具改过。"
+                           "正确做法：传纯 sid（如 [\"%s\"]），不要回传带 bbox/dims 的旧 dict —— "
+                           "场景重算会给出当前真实包围盒。" % (desc, stale[0][0]))
+                    if isinstance(obs, str) and obs.rstrip().endswith("}"):
+                        step["obs"] = obs.rstrip()[:-1] + ',"_stale_fp":%s}' % json.dumps(
+                            msg, ensure_ascii=False)
+                    step["hint"] = "select 回传旧指纹（%d 个实体 bbox 与场景不符），改用纯 sid 重查" % len(stale)
+                    self.L.append("stale_fingerprint",
+                                  {"step": sid, "stale": [s for s, _, _ in stale]})
+            except Exception:
+                pass
         if name == "load" and isinstance(out, dict):
             p_ = (out.get("meta") or {}).get("path")
             n_seen = self._loaded.get(p_, 0)
