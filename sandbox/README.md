@@ -190,10 +190,14 @@ python studio.py export --runs ag_ifc,edit09,edit02   # 单文件快照，双击
 | **语义标签的审计** | `_audit` + 族 facts | 答了「门 / 窗 / 落地窗 / 无法区分」，标签必须落在该族 facts 允许的范围里（范围由 grounded、下框、扇推出），且 evidence 里必须引用算族的那一步。**「标签是证据的结论」，不是形容词** |
 | **预算 / 停滞** | `max_turns`(声明) + `hard_turns`(终止) / `_sig_count` | **两层预算**：`max_turns`是声明预算，驱动收口提示与策略里 budget_left（剩余 ≤15% 时催交卷）；`hard_turns`（默认 max_turns×1.5）才是真正硬停判据，容错区 `[max_turns, hard_turns)` 让"就差一两轮"的任务跑完，最终状态打 `BUDGET_OVERRUN`（非纯失败，供事后减分）。`--grace-turns`/`--grace-wall`可显式配置容错额度。收尾状态按「被什么挡住」命名：`OK`/`GATE_BLOCKED`/`AUDIT_FAILED`/`BUDGET_EXHAUSTED`/`BUDGET_OVERRUN`/`STALLED`。几何被改过之后签名计数清空 —— 「改前量一次、改后量一次」是写层最该做的动作，不能判成原地打转 |
 | **语义记忆 facts / 结果 memo** | `loop._extract_facts` / `loop._memo_result` | **过程可压缩、结论必须保留**。观察滑出 `keep_full=4` 窗口会被压成一行表格，若只存原始观察，语义结论（哪面墙是门墙、哪个是框）就跟着丢 —— agent 推出「门墙是 C005」后算夹角又用 C006，自己跟自己矛盾（实测 T01-3 答 25°≠65°）。`_extract_facts` 从 `openings`(grounded/sill_z)、`assembly`(wall/grounded/opening)、`select`(dims 最薄边>0.05m=框) 提炼参照物身份判据，固化进 `self.facts`；`_memo_result` 每步核心结论提炼成结构化 JSON。两者每轮随 `ctx` 传给 LLM（`policy._messages` 渲染「已确认的语义事实，不要推翻」）。**只做搬移+标准化，不替 agent 选词** |
+| **EDIT_PLAN 先规划再动手** | `PHASES` 加 `EDIT_PLAN` / `plan_edit` / `_handle_plan_edit` / `_plan_sig` | 写层任务进 EDIT 前必须先 `plan_edit` 把主任务卡按 EDIT 白名单分解成 checklist（每项 tool/sids/target，**最后一项必须是 emit**），再 `advance_phase` 进 EDIT 逐项执行、每完成一项自动打勾。治两类失败：① 改完忘 emit（清单末项就是 emit，漏不掉）；② 反复做无关 edit（同一 (tool,sids) 签名 ≥2 次判 `edit_loop_warn`，打断并提示回下一个未完成项）。**左挪 1mm 再右挪 1mm 这种对最终成果无影响的无效 edit，反复做就是死循环，必须打断**。`_plan_sig` 只对 tool+sids 签名（不含 target —— target 措辞会抖，误判成「清单变了」逼 agent 重发，实测同一份 13 项清单重发 15 次）；清单没变直接提示 advance_phase，不再重发 |
+| **emit 硬门控** | `_dispatch` 在 `_call` 前 + `_emit_gate_rejects` | 清单未完成占比 >50% 时拒 emit（最多 2 次后放行）。T06 三轮 agent 都只做「加宽到 6.0」就 emit（跳过最难的 reopen_round 和整个 5.4 阶段），软提示拦不住 —— 硬拦逼它回头补，但设上限防死锁（清单里有的项确实做不了） |
+| **select 旧指纹提醒** | `_call` 里 select 返回后比对 `bus.scene` 的 `Solid.bbox()` | 方案 2：agent 把上一轮 select 输出原样回传、而几何期间已被 edit 工具改过 → `d.update(it)` 让旧字段覆盖场景重算，select 说旧 bbox、mesh_health 说新 bbox，agent 判「状态矛盾」放弃。这里只**提醒不拦**（可能是 principal_frame 参照系坐标，那是合法用法）：任一轴偏差 >5mm → 打 `stale_fingerprint` 事件 + 提示改用纯 sid 重查。方案 1（改「场景优先」）会破坏 principal_frame 参照系筛选，已回退 |
+| **第五道审计（有数没整理）** | `_audit`：`n_claims==0` 且 `_has_numbers()` | 前面四道各拦一种「没交」：空 / 全 null / 只有 note / 键全在值全空。这条拦最隐蔽的一种 —— values 非空、有字符串结论，但**一个可核对的数值都没写进 values**（claims 为空），而本次运行明明量出过数。贴 draft board 逼 agent 把量到的数整理进具体键，**不替它决定哪个数填哪个键**。只拒一次（`_null_rejects` 计数）防死锁；纯识别任务（语义标签）claims 为空但 `_has_numbers` 也为空，不触发 |
 
 ## 写层（EDIT）：改完必须落盘再读回
 
-前四阶段把模型读成数字；写层的任务反过来，要**改出一个新的模型**。这里最容易糊弄的地方在于：
+前四阶段（SURVEY→IDENTIFY→MEASURE→EDIT_PLAN）把模型读成数字；写层的任务反过来，要**改出一个新的模型**。这里最容易糊弄的地方在于：
 编辑函数自己就能返回「改完之后体积是多少」。如果直接把这个数写进答案，整条链就成了自证 ——
 工具说自己改对了，然后就没人再问。
 
@@ -201,8 +205,8 @@ python studio.py export --runs ag_ifc,edit09,edit02   # 单文件快照，双击
 
 | 纪律 | 实现 | 被违反时会怎样 |
 |---|---|---|
-| **改了就落盘** | `EDIT` 阶段的门控是 `(not edits) or bool(emitted)` | 动了几何却没有 `emit` 写出文件，离开 EDIT 阶段被拒 |
-| **落盘就读回** | `REVALIDATE` 的门控是 `bool(reloaded & emitted)` | 读回的文件不是自己刚写出去的那个，进不了 REPORT；`REVALIDATE` 的白名单里没有编辑工具，想边改边复核也不行 |
+| **改了就落盘** | `EDIT` 阶段的门控是 `(read_only and pass占位) or bool(emitted)` | 动了几何却没有 `emit` 写出文件，离开 EDIT 阶段被拒。另有**审计兜底**（`_audit` 开头）：写层任务有 emit 前快照但没 emit，交卷时退回 EDIT 并拒答案 —— 防止 agent 交「要改到哪的目标坐标」而非「改完后的结果」 |
+| **落盘后由 DIFF 自动核验改动** | `DIFF` 阶段（编排层自动，`_enter_diff`）：emit 前快照（进 EDIT 时抓）对比 emit 后场景快照，逐实体算 bbox diff 注入账本 | 原 `REVALIDATE` 阶段已由 `DIFF` 取代（emit 写盘的就是内存场景，内存 after 快照 == 落盘文件几何，无需额外读回）。`reloaded` 集合仍记录 agent 主动 `load` 回读自己 emit 的文件（`reloaded_own_output`），作为「复核成立」的加分证据，但不再是 REPORT 的硬门控 |
 
 `load` 一个文件不算复核，**只有读回自己写出去的那个路径**才记 `reloaded_own_output`
 （拿原始模型重读一遍是看没改过的东西）。落盘格式为单文件 glTF（内嵌 base64 缓冲）或 OBJ，
@@ -215,7 +219,7 @@ python studio.py export --runs ag_ifc,edit09,edit02   # 单文件快照，双击
 | `translate` | 整体平移，返回 `delta` 与前后包围盒 | T-05 的平移方案（位移量直接来自返回值） |
 | `stretch_axis` | 沿轴分段线性重映射 `[[from,to],…]`，段外按最外段斜率外推 | T-06 加宽、T-07 抬顶面 |
 | `cut_plane` | 半空间逐三角裁剪 + 切口接环 + 耳切封口 | T-07 球切平 |
-| `reopen_round` | 把矩形开口按面积重建为圆（半径由实际采样点的多边形面积反算） | T-06 方窗改圆窗 |
+| `reopen_round` | 把矩形开口按面积重建为圆（半径由实际采样点的多边形面积反算）。重建后按**有符号体积**判朝向：`signed_volume<0` 则整体翻面，保证壳体外法向朝外 | T-06 方窗改圆窗 |
 | `rotate_axis` | 绕任意轴整体旋转（Rodrigues），返回前后包围盒与最大位移 | T-08 把虚掩的门摆回关闭位、T-10 调整火箭朝向 |
 
 `stretch_axis` 是「参数化」的全部秘密：一张锚点表同时决定地板、后墙、右墙、窗框、画框的位移，

@@ -50,7 +50,10 @@ PHASES = ["SURVEY", "IDENTIFY", "MEASURE", "EDIT_PLAN", "EDIT", "DIFF", "VERIFY"
 # 产出结构化 diff 报告塞进账本，不占 agent 的 LLM 轮次。它只报告「改了什么」，
 # 不判断「对不对」—— 对不对是 VERIFY 的活。
 #
-# REVALIDATE 仍存在（落盘后必须读回），但它的读回结果现在同时喂给 DIFF 做对比。
+# 写层「落盘就读回」纪律已由 DIFF 接管（af668f3 取代原 REVALIDATE 阶段）：
+# emit 写盘的就是内存场景，DIFF 用 emit 后内存快照对比 emit 前快照，即等价于
+# 「读回落盘文件再量」。REVALIDATE 的定义（PHASE_TOOLS/PHASE_GOAL/gate）仍保留，
+# 作为文档与兼容，但不在 PHASES 序列里、不可达（死代码）。
 # 语义范围表用的词。它既给出"每族允许哪些词"，也给出审计要认的"语义标签"集合 ——
 # 两处用同一份，才不会出现"范围外的词审计看不见"。
 SCOPE_LABELS = ("门", "窗", "落地窗", "无法区分")
@@ -1544,7 +1547,9 @@ class Loop:
         """进 DIFF 阶段时编排层自动算 emit 前后几何 diff，注入账本。
 
         - emit 前快照：`_edit_before_snap`（进 EDIT 时已抓）
-        - emit 后快照：从 emit 写出的文件读回几何再抓一份
+        - emit 后快照：从**当前场景**（emit 写入的内存态，与落盘内容一致）抓一份。
+          REVALIDATE 阶段已被 DIFF 取代（af668f3）：emit 写盘的就是内存场景，
+          所以内存 after 快照 == 落盘文件几何，无需额外读回再抓。
         - diff 内容：逐实体对比 bbox 变化，只报告「改了什么」、不判断「对不对」
 
         纯测量任务（read_only）：无 emit，diff 报告 changed=[]，立即 pass。
