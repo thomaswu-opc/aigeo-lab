@@ -402,5 +402,52 @@ try:
 except OSError:
     pass
 
+# 7l. emit 硬门控：清单未完成占比高时拒 emit（_dispatch 路径），最多拒 2 次后放行
+lp_i = mk_editloop()
+lp_i.phase = "EDIT"
+lp_i.edit_checklist = [
+    {"tool": "translate", "sids": ["C007"], "target": "第一步", "done": False},
+    {"tool": "reopen_round", "sids": ["C006"], "target": "第二步", "done": False},
+    {"tool": "stretch_axis", "sids": ["C004"], "target": "第三步", "done": False},
+    {"tool": "emit", "sids": [], "target": "落盘", "done": False},
+]
+# 3 项工作，0 项完成 → 占比 0% < 50%，第 1 次 emit 应被拒
+_emit_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "_tmp_7l_emit.gltf")
+lp_i._dispatch({"tool": "emit", "args": {"path": _emit_path}, "why": "落盘"})
+rej1 = [e for e in lp_i.L if e.get("kind") == "emit_gate_reject"]
+check("第 1 次 emit 未完成占比高被拒", len(rej1), 1)
+check("拒绝时不写盘", len(lp_i.emitted), 0)
+check("拒绝计数 = 1", lp_i._emit_gate_rejects, 1)
+# 第 2 次仍被拒
+lp_i._dispatch({"tool": "emit", "args": {"path": _emit_path}, "why": "落盘"})
+check("第 2 次 emit 仍被拒", len([e for e in lp_i.L if e.get("kind") == "emit_gate_reject"]), 2)
+# 第 3 次超过上限 → 放行（防死锁）
+lp_i._dispatch({"tool": "emit", "args": {"path": _emit_path}, "why": "落盘"})
+check("第 3 次 emit 超上限放行", len(lp_i.emitted) >= 1, True)
+check("放行后仍只有 2 次拒绝", len([e for e in lp_i.L if e.get("kind") == "emit_gate_reject"]), 2)
+for p_ in list(lp_i.emitted):
+    try:
+        os.remove(p_)
+    except OSError:
+        pass
+
+# 7m. emit 门控：清单完成过半时直接放行，不拒
+lp_j = mk_editloop()
+lp_j.phase = "EDIT"
+lp_j.edit_checklist = [
+    {"tool": "translate", "sids": ["C007"], "target": "第一步", "done": False},
+    {"tool": "reopen_round", "sids": ["C006"], "target": "第二步", "done": False},
+    {"tool": "emit", "sids": [], "target": "落盘", "done": False},
+]
+lp_j._edit_done = {0}   # 2 项工作完成 1 项 = 50%，不 < 50% → 放行
+_emit_path2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", "_tmp_7m_emit.gltf")
+lp_j._dispatch({"tool": "emit", "args": {"path": _emit_path2}, "why": "落盘"})
+check("清单过半完成时 emit 不拒", len([e for e in lp_j.L if e.get("kind") == "emit_gate_reject"]), 0)
+for p_ in list(lp_j.emitted):
+    try:
+        os.remove(p_)
+    except OSError:
+        pass
+
 print("\n%d 通过 / %d 失败" % (ok, fail))
 sys.exit(1 if fail else 0)

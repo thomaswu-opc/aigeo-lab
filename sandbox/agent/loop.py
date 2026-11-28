@@ -290,6 +290,9 @@ class Loop:
         self.edit_checklist = []
         # 已匹配完成的 checklist 下标集合（edit 工具调用命中某项时标记）
         self._edit_done = set()
+        # emit 硬门控的拒绝计数：清单未完成占比高时拒 emit，最多拒 EMIT_GATE_MAX 次后放行，
+        # 防止"清单没做完就交卷"变成死锁。
+        self._emit_gate_rejects = 0
         # EDIT 内的 edit 工具签名计数：同一 (tool, sids, delta) 重复 ≥2 次判空转，
         # 打断并提示回到 checklist 下一个未完成项。这是防「左挪 1mm 右挪 1mm」死循环的核心。
         self._edit_sigs = {}
@@ -565,6 +568,35 @@ class Loop:
         if name not in TOOLS:
             self.L.append("policy_error", {"error": "未注册工具 %s" % name})
             return
+        # emit 硬门控（方案 1）：清单未完成占比高时拒 emit，最多 EMIT_GATE_MAX 次后放行。
+        # 动机：T06 三轮 agent 都只做"加宽到 6.0"就 emit（跳过最难的 reopen_round 和整个 5.4
+        # 阶段），软提示拦不住 —— 它选择无视、直接交卷。硬拦 1-2 次逼它回头补，但设上限防死锁
+        # （清单里有的项确实做不了，无限拒绝会卡死）。
+        if name == "emit" and self.edit_checklist:
+            done_n = len(self._edit_done)
+            total_n = len(self.edit_checklist)
+            # emit 本身是清单最后一项，扣掉后剩下的"该做的活"
+            work_n = max(0, total_n - 1)
+            if work_n > 0 and done_n < work_n * 0.5 and self._emit_gate_rejects < 2:
+                self._emit_gate_rejects += 1
+                pending = [i for i in range(total_n) if i not in self._edit_done]
+                pend_desc = "、".join("%s(sids=%s)" % (self.edit_checklist[i]["tool"],
+                                                      ",".join(self.edit_checklist[i]["sids"]) or "—")
+                                      for i in pending[:4])
+                self.gate_rejects += 1
+                self.steps.append({"id": "gate", "phase": self.phase, "tool": "emit",
+                                   "rejected": True,
+                                   "why": "清单未完成 %d/%d 项就尝试落盘" % (done_n, work_n),
+                                   "obs": "已完成 %d/%d 项（%d 项工作，emit 是最后一项）。"
+                                          "还差：%s。回去做完这些再 emit —— "
+                                          "只做完一半就落盘，提交的模型缺另一半改动，"
+                                          "复核会被审计驳回。这是第 %d 次拒绝，再拒 %d 次后强制放行"
+                                          % (done_n, work_n, len(pending), pend_desc,
+                                             self._emit_gate_rejects, 2 - self._emit_gate_rejects)})
+                self.L.append("emit_gate_reject",
+                              {"done": done_n, "work": work_n, "pending": pending,
+                               "rejects": self._emit_gate_rejects})
+                return
         self._call(name, act.get("args") or {}, why, act.get("expect_n"),
                    act.get("label"), act.get("alias"))
 
